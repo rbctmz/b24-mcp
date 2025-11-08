@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+import logging
 
 from ..bitrix_client import BitrixAPIError, BitrixClient
 from ..exceptions import ToolNotFoundError, UpstreamError
@@ -8,6 +9,8 @@ from ..settings import BitrixSettings
 from .schemas import MCPMetadata, ToolCallRequest, ToolCallResponse, ToolDescriptor
 
 ToolHandler = Callable[[BitrixClient, Dict[str, Any]], Awaitable[ToolCallResponse]]
+
+logger = logging.getLogger(__name__)
 
 
 def _metadata(tool: str, settings: BitrixSettings, resource: Optional[str] = None) -> MCPMetadata:
@@ -94,13 +97,52 @@ class ToolRegistry:
         )
 
     async def _get_leads(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
-        return await _call_bitrix(
+        payload = dict(params)
+        logger.info(f"[getLeads] Input params: {params}")
+
+        # Разбор и валидация параметра limit до использования
+        requested_limit: Optional[int] = None
+        if "limit" in params and params.get("limit") is not None:
+            try:
+                requested_limit = int(params.get("limit"))
+            except (ValueError, TypeError) as e:
+                logger.warning(f"[getLeads] Invalid limit value: {params.get('limit')}, error: {e}")
+                requested_limit = None
+
+        if requested_limit is not None:
+            # enforce server-side cap
+            cap = 500
+            payload["limit"] = requested_limit if requested_limit <= cap else cap
+            logger.info(f"[getLeads] Setting limit in payload: {payload['limit']}")
+        else:
+            logger.info("[getLeads] No valid limit specified in params; not setting limit")
+
+        logger.info(f"[getLeads] Final payload to Bitrix24: {payload}")
+
+        response = await _call_bitrix(
             client,
             tool="getLeads",
             resource="crm/leads",
             method="crm.lead.list",
-            payload=params,
+            payload=payload,
         )
+
+        # Проверяем результат
+        result = response.result
+        if isinstance(result, dict) and "result" in result:
+            leads_list = result["result"]
+            if isinstance(leads_list, list):
+                returned_count = len(leads_list)
+                logger.info(f"[getLeads] Bitrix24 returned {returned_count} leads")
+
+                # Обрезаем, если нужно
+                if requested_limit is not None and requested_limit > 0 and returned_count > requested_limit:
+                    logger.warning(f"[getLeads] Truncating from {returned_count} to {requested_limit}")
+                    result["result"] = leads_list[:requested_limit]
+                    # Обновляем счетчик
+                    result["total"] = min(result.get("total", returned_count), requested_limit)
+
+        return response
 
     async def _get_contacts(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
         return await _call_bitrix(

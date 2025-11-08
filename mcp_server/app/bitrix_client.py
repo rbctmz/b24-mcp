@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Dict, Optional
 
 import httpx
@@ -9,6 +10,8 @@ from httpx import Response
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .settings import BitrixSettings
+
+logger = logging.getLogger(__name__)
 
 
 class BitrixAPIError(RuntimeError):

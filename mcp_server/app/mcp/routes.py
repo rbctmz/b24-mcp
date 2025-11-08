@@ -9,6 +9,10 @@ from ..mcp.resources import ResourceRegistry
 from ..mcp.tools import ToolRegistry
 from .schemas import MCPIndexResponse, ResourceQueryRequest, ResourceQueryResponse, ToolCallRequest, ToolCallResponse
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 _HEALTH_PAYLOAD: Dict[str, str] = {"status": "ok", "message": "MCP endpoint is alive"}
@@ -82,12 +86,13 @@ async def mcp_handshake(
     # Попытка прочитать тело запроса разными способами
     try:
         body = await request.json()
+        logger.info(f"MCP request: {body}")
     except Exception:
         # Если не удалось распарсить как JSON, пытаемся прочитать как строку
         try:
             body_bytes = await request.body()
             if not body_bytes:
-                # Пустое тело - возвращаем ошибку JSON-RPC
+                logger.warning("Empty request body")
                 return {
                     "jsonrpc": "2.0",
                     "id": None,
@@ -98,7 +103,9 @@ async def mcp_handshake(
                 }
             import json
             body = json.loads(body_bytes.decode('utf-8'))
+            logger.info(f"MCP request (parsed from bytes): {body}")
         except Exception as e:
+            logger.error(f"Failed to parse request body: {e}")
             return {
                 "jsonrpc": "2.0",
                 "id": None,
@@ -114,14 +121,30 @@ async def mcp_handshake(
         method = body.get("method", "")
         params = body.get("params", {})
         
+        logger.info(f"Processing JSON-RPC method: {method}, id: {request_id}")
+        
+        # Уведомления (notifications) не требуют ответа
+        if request_id is None:
+            if method == "initialized":
+                logger.info("Received initialized notification")
+                from fastapi import Response
+                return Response(status_code=204)  # No Content для notifications
+            else:
+                logger.warning(f"Unknown notification method: {method}")
+                from fastapi import Response
+                return Response(status_code=204)
+        
         # Обработка метода initialize
         if method == "initialize":
+            logger.info("Processing initialize request")
             result = _handshake_payload(request, resource_registry, tool_registry)
-            return {
+            response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": result
             }
+            logger.info(f"Initialize response: {response}")
+            return response
         # Обработка других методов (tools/call, resources/query и т.д.)
         elif method == "tools/call":
             tool_name = params.get("name")
@@ -192,15 +215,8 @@ async def mcp_handshake(
                 }
             }
     else:
-        # Не JSON-RPC формат - возвращаем ошибку
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {
-                "code": -32600,
-                "message": "Invalid Request: not a valid JSON-RPC 2.0 request"
-            }
-        }
+        # Обратная совместимость: при получении простого JSON возвращаем payload handshake
+        return _handshake_payload(request, resource_registry, tool_registry)
 
 
 @router.post("/initialize")
