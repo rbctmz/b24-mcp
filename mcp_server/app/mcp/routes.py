@@ -69,20 +69,23 @@ def _handshake_payload(
 
 
 # Simple in-process SSE broadcaster for connected clients. Each client gets
-# an asyncio.Queue where server code can place JSON-serializable payloads
-# which will be sent as SSE `data:` events. This is intentionally lightweight
-# and suitable for local/dev usage; for production multi-instance setups use
-# Redis/other pubsub to fan-out events across processes.
+# an asyncio.Queue of JSON-RPC messages that will be emitted as SSE `data:`
+# events. This is intentionally lightweight and suitable for local/dev usage;
+# for production multi-instance setups use Redis/other pubsub to fan-out events
+# across processes.
 SSE_CLIENTS: set[asyncio.Queue] = set()
 
 
-async def _broadcast_sse(payload: Dict[str, Any]) -> None:
+async def _broadcast_sse(message: Dict[str, Any]) -> None:
     if not SSE_CLIENTS:
+        return
+    if "jsonrpc" not in message:
+        logger.warning("Attempted to broadcast non JSON-RPC payload over SSE")
         return
     for q in list(SSE_CLIENTS):
         try:
             # Use put_nowait so a slow client won't block the broadcaster.
-            q.put_nowait(payload)
+            q.put_nowait(message)
         except asyncio.QueueFull:
             # Drop message for full queues; client is likely slow.
             continue
@@ -174,18 +177,18 @@ async def mcp_handshake(
         if method == "initialize":
             logger.info("Processing initialize request")
             result = _handshake_payload(request, resource_registry, tool_registry)
-            response = {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": result
+                "result": result,
             }
-            logger.info(f"Initialize response: {response}")
+            logger.info(f"Initialize response: {rpc_response}")
             # Broadcast initialize result to any SSE-connected clients as well
             try:
-                asyncio.create_task(_broadcast_sse({"type": "initialize", "id": request_id, "result": result}))
+                asyncio.create_task(_broadcast_sse(rpc_response))
             except Exception:
                 logger.exception("Failed to broadcast initialize to SSE clients")
-            return response
+            return rpc_response
         # Обработка других методов (tools/call, resources/query и т.д.)
         elif method == "tools/call":
             tool_name = params.get("name")
@@ -201,16 +204,17 @@ async def mcp_handshake(
                 }
             tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
             response = await tool_registry.call(tool_request)
-            # Broadcast tool call result to SSE clients
-            try:
-                asyncio.create_task(_broadcast_sse({"type": "tools/call", "id": request_id, "result": response.model_dump()}))
-            except Exception:
-                logger.exception("Failed to broadcast tools/call to SSE clients")
-            return {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": response.model_dump()
+                "result": response.model_dump(),
             }
+            # Broadcast tool call result to SSE clients
+            try:
+                asyncio.create_task(_broadcast_sse(rpc_response))
+            except Exception:
+                logger.exception("Failed to broadcast tools/call to SSE clients")
+            return rpc_response
         elif method == "resources/query":
             resource_name = params.get("uri")
             resource_params = params.get("arguments", {})
@@ -230,16 +234,17 @@ async def mcp_handshake(
                 cursor=cursor
             )
             response = await resource_registry.query(resource_request)
-            # Broadcast resource query result to SSE clients
-            try:
-                asyncio.create_task(_broadcast_sse({"type": "resources/query", "id": request_id, "result": response.model_dump()}))
-            except Exception:
-                logger.exception("Failed to broadcast resources/query to SSE clients")
-            return {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": response.model_dump()
+                "result": response.model_dump(),
             }
+            # Broadcast resource query result to SSE clients
+            try:
+                asyncio.create_task(_broadcast_sse(rpc_response))
+            except Exception:
+                logger.exception("Failed to broadcast resources/query to SSE clients")
+            return rpc_response
         elif method == "tools/list":
             return {
                 "jsonrpc": "2.0",
@@ -284,17 +289,29 @@ async def mcp_initialize(
         # Это JSON-RPC запрос
         request_id = rpc_request.get("id")
         result = _handshake_payload(request, resource_registry, tool_registry)
-        
-        return {
+        rpc_response = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": result
+            "result": result,
         }
+        try:
+            asyncio.create_task(_broadcast_sse(rpc_response))
+        except Exception:
+            logger.exception("Failed to broadcast initialize to SSE clients (initialize endpoint)")
+        return rpc_response
     else:
         # Обратная совместимость со старым форматом
         payload = _handshake_payload(request, resource_registry, tool_registry)
         try:
-            asyncio.create_task(_broadcast_sse({"type": "initialize", "id": None, "result": payload}))
+            asyncio.create_task(
+                _broadcast_sse(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "initialize",
+                        "params": payload,
+                    }
+                )
+            )
         except Exception:
             logger.exception("Failed to broadcast initialize to SSE clients (initialize endpoint)")
         return payload
@@ -318,7 +335,15 @@ async def resource_query(
     resp = await resource_registry.query(request)
     # Broadcast results to SSE clients
     try:
-        asyncio.create_task(_broadcast_sse({"type": "resources/query", "id": None, "result": resp.model_dump()}))
+        asyncio.create_task(
+            _broadcast_sse(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "resources/query",
+                    "params": {"result": resp.model_dump()},
+                }
+            )
+        )
     except Exception:
         logger.exception("Failed to broadcast resources/query from /resource/query endpoint")
     return resp
@@ -359,21 +384,32 @@ async def tool_call(
         tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
         response = await tool_registry.call(tool_request)
 
+        rpc_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": response.model_dump(),
+        }
+
         # Also broadcast tool result to SSE clients
         try:
-            asyncio.create_task(_broadcast_sse({"type": "tools/call", "id": request_id, "result": response.model_dump()}))
+            asyncio.create_task(_broadcast_sse(rpc_response))
         except Exception:
             logger.exception("Failed to broadcast tools/call from /tool/call endpoint")
 
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": response.model_dump()
-        }
+        return rpc_response
     else:
         # Старый формат для обратной совместимости
         tool_request = ToolCallRequest(**rpc_request)
         response = await tool_registry.call(tool_request)
+        rpc_notification = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"result": response.model_dump()},
+        }
+        try:
+            asyncio.create_task(_broadcast_sse(rpc_notification))
+        except Exception:
+            logger.exception("Failed to broadcast tools/call (legacy format) to SSE clients")
         return response.model_dump()
 
 
@@ -496,7 +532,13 @@ async def mcp_sse(request: Request) -> StreamingResponse:
         # Send initial handshake as first event
         try:
             payload = _handshake_payload(request, resource_registry, tool_registry)
-            init_event = json.dumps({"type": "initialize", "result": payload})
+            init_event = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": payload,
+                }
+            )
             yield "data: " + init_event + "\n\n"
         except Exception:
             logger.exception("Failed to send initial handshake over SSE")

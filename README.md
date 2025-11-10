@@ -180,6 +180,75 @@ curl -sS -X POST http://127.0.0.1:8000/mcp \
 
 For production, replace curl with a proper SSE client (browser EventSource or an SSE-capable client library) and secure the connection with TLS (`https`/`wss`).
 
+## MCP Client Setup (Claude, Codex, Cursor)
+
+The server can be used by any MCP-capable client. Below are quick-start
+examples for the most common desktop clients. Adjust paths for your
+operating system and restart the client after editing its config.
+
+### Claude Desktop
+
+1. Ensure the MCP server is running locally (`uvicorn mcp_server.app.main:app --reload`).
+2. Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
+   (macOS) or `%AppData%\Claude\claude_desktop_config.json` (Windows).
+3. Add an entry under `mcpServers`:
+
+```jsonc
+{
+  "mcpServers": {
+    "bitrix24": {
+      "command": "/Users/you/Documents/GitHub/b24-mcp/.venv/bin/uvicorn",
+      "args": [
+        "mcp_server.app.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8000",
+        "--reload"
+      ],
+      "env": {
+        "BITRIX_BASE_URL": "https://your-portal.bitrix24.ru/rest",
+        "BITRIX_TOKEN": "xxxxx"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop and the Bitrix24 MCP server will appear in the MCP
+servers menu.
+
+### Codex CLI
+
+1. Run the MCP server (`uvicorn mcp_server.app.main:app --reload`).
+2. Update `~/.codex/config.toml` and add an entry beneath `[mcp_servers]`:
+
+```toml
+[mcp_servers.bitrix24]
+url = "http://127.0.0.1:8000/mcp"
+```
+
+3. Restart the Codex CLI; run `codex mcp list` to verify the connection.
+
+### Cursor IDE
+
+1. Start the MCP server locally.
+2. Edit `~/.cursor/mcp.json` (Cursor creates the file automatically after the
+   first launch) and add a new server definition:
+
+```jsonc
+{
+  "mcpServers": {
+    "bitrix24": {
+      "url": "http://127.0.0.1:8000/mcp",
+      "timeout": 30000,
+      "name": "Bitrix24 MCP"
+    }
+  }
+}
+```
+
+After saving the file, reopen Cursor. The Bitrix24 MCP server will be available
+in the MCP panel and can be enabled per project.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
