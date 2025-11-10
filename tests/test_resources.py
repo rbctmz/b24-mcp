@@ -112,6 +112,50 @@ def test_mcp_tools_list(client: TestClient) -> None:
     assert any(tool["name"] == "getLeads" for tool in tools)
 
 
+def test_mcp_resources_list(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 42, "method": "resources/list", "params": {}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 42
+    resources = payload["result"]["resources"]
+    assert isinstance(resources, list)
+    assert any(resource["uri"] == "crm/deals" for resource in resources)
+
+
+def test_mcp_resources_query_jsonrpc(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.deal.list"] = {
+        "result": [{"ID": "1", "TITLE": "JSONRPC Deal"}],
+        "total": 1,
+    }
+
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "resources/query",
+            "params": {
+                "uri": "crm/deals",
+                "arguments": {"select": ["ID", "TITLE"]},
+                "cursor": None,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 7
+    result = payload["result"]
+    assert result["metadata"]["resource"] == "crm/deals"
+    assert result["data"][0]["TITLE"] == "JSONRPC Deal"
+
+
 def test_mcp_options_healthcheck(client: TestClient) -> None:
     response = client.options("/mcp")
 
