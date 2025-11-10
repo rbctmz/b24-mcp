@@ -11,7 +11,8 @@ from fastapi import APIRouter, Body, Depends, Request, Response, WebSocket, WebS
 from ..dependencies import get_resource_registry, get_tool_registry
 from ..mcp.resources import ResourceRegistry
 from ..mcp.tools import ToolRegistry
-from .schemas import MCPIndexResponse, ResourceQueryRequest, ResourceQueryResponse, ToolCallRequest, ToolCallResponse
+from .schemas import MCPIndexResponse, ResourceQueryRequest, ResourceQueryResponse, ToolCallRequest
+from ..prompt_loader import get_initialize_prompts
 
 import logging
 
@@ -24,6 +25,10 @@ OAUTH_DISCOVERY_PAYLOAD: Dict[str, str] = {
     "status": "ok",
     "message": "OAuth discovery metadata is not configured for this MCP server.",
 }
+
+
+def _json_dumps(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @router.get("/index", response_model=MCPIndexResponse)
@@ -39,6 +44,9 @@ def _handshake_payload(
     resource_registry: ResourceRegistry,
     tool_registry: ToolRegistry,
 ) -> Dict[str, Any]:
+    initialize_prompts = get_initialize_prompts()
+    structured_instructions = initialize_prompts.get("structured", [])
+    instruction_notes = initialize_prompts.get("notes", [])
     resource_descriptors = resource_registry.descriptors()
     tool_descriptors = tool_registry.descriptors()
 
@@ -47,10 +55,7 @@ def _handshake_payload(
             "name": request.app.title or "Bitrix24 MCP Server",
             "version": request.app.version or "0.1.0",
         },
-        "protocolVersion": {
-            "major": 1,
-            "minor": 0,
-        },
+        "protocolVersion": "2025-06-18",
         "capabilities": {
             "resources": {
                 "list": {},
@@ -61,10 +66,18 @@ def _handshake_payload(
                 "call": {},
             },
         },
-        "instructions": request.app.description or "Access Bitrix24 CRM data via MCP resources and tools.",
+        "instructions": (
+            initialize_prompts.get("summary")
+            or request.app.description
+            or "Работайте с данными Bitrix24 через ресурсы и инструменты MCP."
+        ),
         "resources": [descriptor.model_dump() for descriptor in resource_descriptors],
         "tools": [descriptor.model_dump() for descriptor in tool_descriptors],
     }
+    if structured_instructions:
+        response["structuredInstructions"] = structured_instructions
+    if instruction_notes:
+        response["instructionNotes"] = instruction_notes
 
     return response
 
@@ -180,12 +193,11 @@ async def mcp_handshake(
         
         # Уведомления (notifications) не требуют ответа
         if request_id is None:
-            if method == "initialized":
+            if method in {"initialized", "notifications/initialized"}:
                 logger.info("Received initialized notification")
-                return Response(status_code=204)  # No Content для notifications
             else:
                 logger.warning(f"Unknown notification method: {method}")
-                return Response(status_code=204)
+            return Response(status_code=204)  # No Content для notifications
         
         # Обработка метода initialize
         if method == "initialize":
@@ -215,13 +227,14 @@ async def mcp_handshake(
                         "code": -32602,
                         "message": "Invalid params: tool name required"
                     }
-                }
+            }
             tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
             response = await tool_registry.call(tool_request)
+            call_result = response.to_call_tool_result()
             rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": response.model_dump(),
+                "result": call_result,
             }
             # Broadcast tool call result to SSE clients
             try:
@@ -346,8 +359,8 @@ async def mcp_initialize(
                 _broadcast_sse(
                     {
                         "jsonrpc": "2.0",
-                        "method": "initialize",
-                        "params": payload,
+                        "id": None,
+                        "result": payload,
                     }
                 )
             )
@@ -355,8 +368,8 @@ async def mcp_initialize(
             logger.exception("Failed to broadcast initialize to SSE clients (initialize endpoint)")
         return {
             "jsonrpc": "2.0",
-            "method": "initialize",
-            "params": payload,
+            "id": None,
+            "result": payload,
         }
 
 
@@ -392,7 +405,7 @@ async def resource_query(
     return resp
 
 
-@router.post("/tool/call", response_model=ToolCallResponse)
+@router.post("/tool/call")
 async def tool_call(
     rpc_request: Dict[str, Any] = Body(...),
     tool_registry: ToolRegistry = Depends(get_tool_registry),
@@ -426,11 +439,11 @@ async def tool_call(
         
         tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
         response = await tool_registry.call(tool_request)
-
+        call_result = response.to_call_tool_result()
         rpc_response = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "result": response.model_dump(),
+            "result": call_result,
         }
 
         # Also broadcast tool result to SSE clients
@@ -444,16 +457,17 @@ async def tool_call(
         # Старый формат для обратной совместимости
         tool_request = ToolCallRequest(**rpc_request)
         response = await tool_registry.call(tool_request)
+        call_result = response.to_call_tool_result()
         rpc_notification = {
             "jsonrpc": "2.0",
             "method": "tools/call",
-            "params": {"result": response.model_dump()},
+            "params": {"result": call_result},
         }
         try:
             asyncio.create_task(_broadcast_sse(rpc_notification))
         except Exception:
             logger.exception("Failed to broadcast tools/call (legacy format) to SSE clients")
-        return response.model_dump()
+        return call_result
 
 
 @router.websocket("")
@@ -488,9 +502,7 @@ async def mcp_websocket(websocket: WebSocket) -> None:
                 body = json.loads(data)
             except Exception:
                 # Send a JSON-RPC parse error for malformed JSON
-                await websocket.send_text(
-                    json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
-                )
+                await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}))
                 continue
 
             # If this looks like JSON-RPC 2.0
@@ -506,48 +518,42 @@ async def mcp_websocket(websocket: WebSocket) -> None:
                 if method == "initialize":
                     result = _handshake_payload(websocket, resource_registry, tool_registry)
                     response = {"jsonrpc": "2.0", "id": request_id, "result": result}
-                    await websocket.send_text(json.dumps(response))
+                    await websocket.send_text(_json_dumps(response))
 
                 elif method == "tools/list":
-                    await websocket.send_text(
-                        json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"tools": [t.model_dump() for t in tool_registry.descriptors()]}})
-                    )
+                    await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "result": {"tools": [t.model_dump() for t in tool_registry.descriptors()]}}))
 
                 elif method == "resources/list":
-                    await websocket.send_text(
-                        json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {"resources": [r.model_dump() for r in resource_registry.descriptors()]}})
-                    )
+                    await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "result": {"resources": [r.model_dump() for r in resource_registry.descriptors()]}}))
 
                 elif method == "tools/call":
                     tool_name = params.get("name")
                     tool_params = params.get("arguments", {})
                     if not tool_name:
-                        await websocket.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid params: tool name required"}}))
+                        await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid params: tool name required"}}))
                         continue
                     tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
                     resp = await tool_registry.call(tool_request)
-                    await websocket.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": resp.model_dump()}))
+                    await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "result": resp.to_call_tool_result()}))
 
                 elif method == "resources/query":
                     resource_name = params.get("uri")
                     resource_params = params.get("arguments", {})
                     cursor = params.get("cursor")
                     if not resource_name:
-                        await websocket.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid params: resource uri required"}}))
+                        await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid params: resource uri required"}}))
                         continue
                     resource_request = ResourceQueryRequest(resource=resource_name, params=resource_params, cursor=cursor)
                     resp = await resource_registry.query(resource_request)
-                    await websocket.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": resp.model_dump()}))
+                    await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "result": resp.model_dump()}))
 
                 else:
-                    await websocket.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}))
+                    await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}))
 
             else:
                 # Back-compat: send handshake payload if not a JSON-RPC body
                 payload = _handshake_payload(websocket, resource_registry, tool_registry)
-                await websocket.send_text(
-                    json.dumps({"jsonrpc": "2.0", "method": "initialize", "params": payload})
-                )
+                await websocket.send_text(_json_dumps({"jsonrpc": "2.0", "method": "initialize", "params": payload}))
 
     except WebSocketDisconnect:
         logger.info("MCP websocket client disconnected")
@@ -574,26 +580,21 @@ async def mcp_sse(request: Request) -> StreamingResponse:
         return StreamingResponse(iter([""],), media_type="text/event-stream", status_code=500)
 
     async def event_generator(q: asyncio.Queue):
-        # Send initial handshake as first event
         try:
-            payload = _handshake_payload(request, resource_registry, tool_registry)
-            init_event = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "initialize",
-                    "params": payload,
-                }
-            )
-            yield "event: message\ndata: " + init_event + "\n\n"
+            yield "event: endpoint\ndata: /mcp\n\n"
+        except Exception:
+            logger.exception("Failed to advertise SSE endpoint path")
+
+        try:
             while PENDING_SSE_EVENTS:
                 pending = PENDING_SSE_EVENTS.popleft()
                 try:
-                    yield "event: message\ndata: " + json.dumps(pending) + "\n\n"
+                    yield "event: message\ndata: " + _json_dumps(pending) + "\n\n"
                 except Exception:
                     logger.exception("Failed to serialize pending SSE payload")
                     continue
         except Exception:
-            logger.exception("Failed to send initial handshake over SSE")
+            logger.exception("Failed to flush pending SSE payloads")
 
         try:
             while True:
@@ -602,7 +603,7 @@ async def mcp_sse(request: Request) -> StreamingResponse:
                 except asyncio.CancelledError:
                     break
                 try:
-                    yield "event: message\n" + f"data: {json.dumps(item)}\n\n"
+                    yield "event: message\n" + f"data: {_json_dumps(item)}\n\n"
                 except Exception:
                     logger.exception("Failed to serialize SSE payload")
                     continue

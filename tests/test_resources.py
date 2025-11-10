@@ -62,10 +62,14 @@ def test_mcp_handshake(app, client: TestClient) -> None:
     assert payload["method"] == "initialize"
     params = payload["params"]
     assert params["serverInfo"]["name"] == "Bitrix24 MCP Server"
-    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert params["protocolVersion"] == "2025-06-18"
     assert "resources" in params["capabilities"]
     assert "tools" in params["capabilities"]
     assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
+    assert "structuredInstructions" in params
+    assert params["structuredInstructions"][0]["title"] == "Свежие лиды"
+    assert "instructionNotes" in params
+    assert any("DATE_CREATE" in note for note in params["instructionNotes"])
 
 
 def test_mcp_initialize_alias(app, client: TestClient) -> None:
@@ -74,10 +78,11 @@ def test_mcp_initialize_alias(app, client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["jsonrpc"] == "2.0"
-    assert payload["method"] == "initialize"
-    params = payload["params"]
-    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert payload["id"] is None
+    params = payload["result"]
+    assert params["protocolVersion"] == "2025-06-18"
     assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
+    assert params["structuredInstructions"][0]["title"] == "Свежие лиды"
 
 
 def test_mcp_get_entrypoint(app, client: TestClient) -> None:
@@ -88,8 +93,9 @@ def test_mcp_get_entrypoint(app, client: TestClient) -> None:
     assert payload["jsonrpc"] == "2.0"
     assert payload["method"] == "initialize"
     params = payload["params"]
-    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert params["protocolVersion"] == "2025-06-18"
     assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
+    assert params["structuredInstructions"][0]["order"]["DATE_MODIFY"] == "DESC"
 
 
 def test_mcp_healthcheck(client: TestClient) -> None:
@@ -127,6 +133,7 @@ def test_mcp_resources_list(client: TestClient) -> None:
     resources = payload["result"]["resources"]
     assert isinstance(resources, list)
     assert any(resource["uri"] == "crm/deals" for resource in resources)
+    assert any(resource["uri"] == "bitrix24_leads_guide" for resource in resources)
 
 
 def test_mcp_resources_query_jsonrpc(app, client: TestClient) -> None:
@@ -156,6 +163,20 @@ def test_mcp_resources_query_jsonrpc(app, client: TestClient) -> None:
     result = payload["result"]
     assert result["metadata"]["resource"] == "crm/deals"
     assert result["data"][0]["TITLE"] == "JSONRPC Deal"
+
+
+def test_leads_guide_resource(app, client: TestClient) -> None:
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "bitrix24_leads_guide", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "bitrix24_leads_guide"
+    scenarios = body["data"]
+    assert any(item["type"] == "scenario" for item in scenarios)
+    assert any(item.get("type") == "rules" for item in scenarios)
 
 
 def test_mcp_options_healthcheck(client: TestClient) -> None:

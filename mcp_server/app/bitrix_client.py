@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 from httpx import Response
@@ -41,6 +41,7 @@ class BitrixClient:
             reraise=True,
         )
         self._token = settings.token
+        self._include_auth_param = not is_incoming_webhook_base_url(str(settings.base_url))
 
     @property
     def settings(self) -> BitrixSettings:  # pragma: no cover - trivial accessor
@@ -59,7 +60,7 @@ class BitrixClient:
             with attempt:
                 response = await self._client.post(
                     url,
-                    json=payload_with_auth(payload, self._token),
+                    json=payload_with_auth(payload, self._token, include_auth=self._include_auth_param),
                 )
                 data = await self._parse_response(response)
                 return data
@@ -98,11 +99,24 @@ class BitrixClient:
         return data
 
 
-def payload_with_auth(payload: Dict[str, Any], token: str) -> Dict[str, Any]:
+def payload_with_auth(payload: Dict[str, Any], token: Optional[str], *, include_auth: bool = True) -> Dict[str, Any]:
     """Attach authorization token if it is not already present."""
 
-    if "auth" in payload:
+    if not include_auth or not token or "auth" in payload:
         return payload
     merged = dict(payload)
     merged["auth"] = token
     return merged
+
+
+def is_incoming_webhook_base_url(base_url: str) -> bool:
+    """Return True if base_url looks like an incoming webhook endpoint."""
+
+    parsed = urlparse(base_url)
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    try:
+        rest_index = segments.index("rest")
+    except ValueError:
+        return False
+    # Incoming webhooks have structure /rest/{user_id}/{webhook_token}
+    return len(segments) - rest_index >= 3

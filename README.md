@@ -6,10 +6,44 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 - MCP resources for listing deals, leads, contacts, users, and tasks
 - MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks)
+- Локализованные подсказки для MCP (русский язык), включая structuredContent и предупреждения о пропущенных аргументах
+- Ответы инструментов соответствуют CallToolResult (поля `content`, `structuredContent`, `isError`) совместимому с fastmcp
 - Configurable via environment variables (`.env`)
 - HTTPX-based Bitrix24 client with retry/backoff
 - Async FastAPI application ready for Docker or local execution
 - Pytest suite with in-memory Bitrix24 client stubs
+
+## Подсказки MCP и шпаргалки
+
+- Все тексты подсказок, описания инструментов и готовые payload'ы хранятся в `mcp_server/app/docs/prompts_ru.md`. При изменении файла сервер автоматически подхватывает новые инструкции без правок в коде.
+- Ответ `initialize` содержит `structuredInstructions` и `instructionNotes` с примерами: как получить свежие лиды (`order = {"DATE_MODIFY": "DESC"}`) и как задавать диапазоны дат через `>=DATE_CREATE`, `<=DATE_CREATE`.
+- MCP-инструменты возвращают `structuredContent` с полным ответом Bitrix24 и предупреждениями. Если вызов `getLeads` не содержит диапазона по дате, сервер добавляет сообщение и логирует предупреждение.
+- Доступен ресурс `bitrix24_leads_guide`, который отдаёт шпаргалку с типовыми сценариями (свежие лиды, выборка за сегодня, фильтр по статусу) и правилами комбинирования фильтров.
+- Структура `prompts_ru.md` предусматривает локализацию: для новой локали достаточно добавить файл `prompts_<locale>.md` и обновить настройки.
+
+## Формат ответа инструментов (CallToolResult)
+
+- MCP инструменты (`/mcp/tool/call`, JSON-RPC `tools/call`, WebSocket/SSE) возвращают словарь формата:
+
+```json
+{
+  "content": [
+    {"type": "text", "text": "crm/leads: получено 42 записей. Полный ответ в structuredContent.result."},
+    {"type": "text", "text": "Внимание: Добавьте фильтры диапазона ..."} // опционально
+  ],
+  "structuredContent": {
+    "metadata": {"provider": "bitrix24", "tool": "getLeads", "resource": "crm/leads"},
+    "request": {"order": {"DATE_MODIFY": "DESC"}, "filter": {...}},
+    "result": {...},            // исходный ответ Bitrix24
+    "warnings": [...]           // опционально
+  },
+  "isError": false
+}
+```
+
+- Поле `structuredContent` хранит исходный REST payload, поэтому клиенты могут продолжать использовать `metadata` и `result`.
+- Предупреждения о пропущенных датах и других критичных аргументах добавляются в `structuredContent.warnings` и дублируются в `content`.
+- SSE/WebSocket трансляции используют тот же CallToolResult, что исключает ошибки валидатора fastmcp.
 
 ## Project Layout
 
