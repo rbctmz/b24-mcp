@@ -56,11 +56,14 @@ def test_mcp_handshake(app, client: TestClient) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["serverInfo"]["name"] == "Bitrix24 MCP Server"
-    assert payload["protocolVersion"] == {"major": 1, "minor": 0}
-    assert "resources" in payload["capabilities"]
-    assert "tools" in payload["capabilities"]
-    assert any(resource["uri"] == "crm/deals" for resource in payload["resources"])
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["method"] == "initialize"
+    params = payload["params"]
+    assert params["serverInfo"]["name"] == "Bitrix24 MCP Server"
+    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert "resources" in params["capabilities"]
+    assert "tools" in params["capabilities"]
+    assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
 
 
 def test_mcp_initialize_alias(app, client: TestClient) -> None:
@@ -68,8 +71,11 @@ def test_mcp_initialize_alias(app, client: TestClient) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["protocolVersion"] == {"major": 1, "minor": 0}
-    assert any(resource["uri"] == "crm/deals" for resource in payload["resources"])
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["method"] == "initialize"
+    params = payload["params"]
+    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
 
 
 def test_mcp_get_healthcheck(client: TestClient) -> None:

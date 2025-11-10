@@ -271,8 +271,18 @@ async def mcp_handshake(
                 }
             }
     else:
-        # Обратная совместимость: при получении простого JSON возвращаем payload handshake
-        return _handshake_payload(request, resource_registry, tool_registry)
+        # Обратная совместимость: трактуем произвольный JSON как запрос initialize
+        payload = _handshake_payload(request, resource_registry, tool_registry)
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": payload,
+        }
+        try:
+            asyncio.create_task(_broadcast_sse(notification))
+        except Exception:
+            logger.exception("Failed to broadcast initialize notification for legacy request")
+        return notification
 
 
 @router.post("/initialize")
@@ -314,7 +324,11 @@ async def mcp_initialize(
             )
         except Exception:
             logger.exception("Failed to broadcast initialize to SSE clients (initialize endpoint)")
-        return payload
+        return {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": payload,
+        }
 
 
 @router.get("/.well-known/oauth-authorization-server")
@@ -502,7 +516,9 @@ async def mcp_websocket(websocket: WebSocket) -> None:
             else:
                 # Back-compat: send handshake payload if not a JSON-RPC body
                 payload = _handshake_payload(websocket, resource_registry, tool_registry)
-                await websocket.send_text(json.dumps(payload))
+                await websocket.send_text(
+                    json.dumps({"jsonrpc": "2.0", "method": "initialize", "params": payload})
+                )
 
     except WebSocketDisconnect:
         logger.info("MCP websocket client disconnected")
