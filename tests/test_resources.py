@@ -97,6 +97,21 @@ def test_mcp_healthcheck(client: TestClient) -> None:
     assert response.json() == {"status": "ok", "message": "MCP endpoint is alive"}
 
 
+def test_mcp_tools_list(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 1
+    tools = payload["result"]["tools"]
+    assert isinstance(tools, list)
+    assert any(tool["name"] == "getLeads" for tool in tools)
+
+
 def test_mcp_options_healthcheck(client: TestClient) -> None:
     response = client.options("/mcp")
 
