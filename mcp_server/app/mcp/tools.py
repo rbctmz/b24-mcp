@@ -102,12 +102,16 @@ class ToolRegistry:
 
         # Разбор и валидация параметра limit до использования
         requested_limit: Optional[int] = None
-        if "limit" in params and params.get("limit") is not None:
-            try:
-                requested_limit = int(params.get("limit"))
-            except (ValueError, TypeError) as e:
-                logger.warning(f"[getLeads] Invalid limit value: {params.get('limit')}, error: {e}")
-                requested_limit = None
+        if "limit" in params:
+            raw_limit = params.get("limit")
+            if raw_limit is None:
+                logger.info("[getLeads] limit provided but is None; ignoring")
+            else:
+                try:
+                    requested_limit = int(raw_limit)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"[getLeads] Invalid limit value: {raw_limit}, error: {e}")
+                    requested_limit = None
 
         if requested_limit is not None:
             # enforce server-side cap

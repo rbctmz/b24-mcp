@@ -82,8 +82,9 @@ def test_mcp_get_healthcheck(client: TestClient) -> None:
 def test_mcp_options_healthcheck(client: TestClient) -> None:
     response = client.options("/mcp")
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "message": "MCP endpoint is alive"}
+    assert response.status_code == 204
+    assert response.content == b""
+    assert response.headers["Access-Control-Allow-Methods"] == "GET, POST, OPTIONS"
 
 
 def test_well_known_oauth_root(client: TestClient) -> None:

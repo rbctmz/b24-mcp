@@ -129,6 +129,57 @@ curl -X POST http://localhost:8000/mcp/tool/call \
 - Ensure `.env` is stored securely and not committed to source control.
 - For production, configure HTTPS termination and add authentication in front of the MCP server if required.
 
+## Local WebSocket / CORS testing
+
+- During local development the MCP server accepts WebSocket connections at `ws://<host>:<port>/mcp`.
+- By default the application is configured to accept origins from `http://localhost` and `http://127.0.0.1`.
+- If you see `403 Forbidden` when attempting to open a WebSocket, try supplying an explicit `Origin` header with your client
+  (for example `Origin: http://localhost`) or update the `allow_origins` setting in `mcp_server/app/main.py`.
+
+Testing examples:
+
+```bash
+# quick HTTP index check
+curl -sS http://127.0.0.1:8000/mcp/index | jq .
+
+# websocat with explicit Origin header (recommended when debugging CORS)
+websocat -H 'Origin: http://localhost' ws://127.0.0.1:8000/mcp
+
+# FastMCP CLI (if installed) to test MCP handshake
+python -m fastmcp.cli connect ws://127.0.0.1:8000/mcp
+```
+
+Note: For production deployments, restrict `allow_origins` to trusted domains and enable TLS (`wss://`).
+
+### Server-Sent Events (SSE) streaming
+
+This MCP server exposes a simple Server-Sent Events endpoint at `/mcp/sse`.
+Use SSE when you want a streaming transport from server → client. The server
+will send an initial handshake payload on connect and will broadcast tool and
+resource results to connected SSE clients.
+
+How it works:
+- Connect a client to `GET /mcp/sse` to receive events (Content-Type `text/event-stream`).
+- Send JSON-RPC requests via `POST /mcp` (the server will reply to the POST and
+  also broadcast results to SSE subscribers).
+- For local testing use the following commands:
+
+```bash
+# Tail the HTTP index
+curl -sS http://127.0.0.1:8000/mcp/index | jq .
+
+# Connect to SSE (example using curl) — note: curl will not nicely render continuous SSE output
+# but can be used to test the handshake
+curl -v http://127.0.0.1:8000/mcp/sse
+
+# Send initialize over HTTP JSON-RPC (you should also see this payload on the SSE connection)
+curl -sS -X POST http://127.0.0.1:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq .
+```
+
+For production, replace curl with a proper SSE client (browser EventSource or an SSE-capable client library) and secure the connection with TLS (`https`/`wss`).
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.

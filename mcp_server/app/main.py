@@ -38,8 +38,9 @@ def create_app() -> FastAPI:
     # Добавляем CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # В продакшене укажите конкретные домены
-        allow_credentials=True,
+        # Для локальной разработки поддерживаем любые порты localhost/127.0.0.1
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
