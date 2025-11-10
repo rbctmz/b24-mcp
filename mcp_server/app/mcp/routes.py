@@ -92,11 +92,16 @@ async def _broadcast_sse(message: Dict[str, Any]) -> None:
 
 
 @router.get("")
-async def mcp_healthcheck(request: Request) -> Response:
+async def mcp_entrypoint(
+    request: Request,
+    resource_registry: ResourceRegistry = Depends(get_resource_registry),
+    tool_registry: ToolRegistry = Depends(get_tool_registry),
+) -> Response:
     accept_header = request.headers.get("accept", "")
     if "text/event-stream" in accept_header.lower():
         return await mcp_sse(request)
-    return JSONResponse(_HEALTH_PAYLOAD)
+    payload = _handshake_payload(request, resource_registry, tool_registry)
+    return JSONResponse({"jsonrpc": "2.0", "method": "initialize", "params": payload})
 
 
 @router.options("")
@@ -114,6 +119,11 @@ async def mcp_options(request: Request) -> Response:
             "Access-Control-Max-Age": "600",
         },
     )
+
+
+@router.get("/health")
+async def mcp_healthcheck() -> Dict[str, str]:
+    return dict(_HEALTH_PAYLOAD)
 
 
 @router.post("")

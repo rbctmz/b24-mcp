@@ -142,6 +142,9 @@ Testing examples:
 # quick HTTP index check
 curl -sS http://127.0.0.1:8000/mcp/index | jq .
 
+# JSON-RPC handshake over HTTP GET
+curl -sS http://127.0.0.1:8000/mcp | jq .
+
 # websocat with explicit Origin header (recommended when debugging CORS)
 websocat -H 'Origin: http://localhost' ws://127.0.0.1:8000/mcp
 
@@ -176,6 +179,9 @@ curl -v http://127.0.0.1:8000/mcp/sse
 curl -sS -X POST http://127.0.0.1:8000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq .
+
+# Health endpoint
+curl -sS http://127.0.0.1:8000/mcp/health | jq .
 ```
 
 For production, replace curl with a proper SSE client (browser EventSource or an SSE-capable client library) and secure the connection with TLS (`https`/`wss`).

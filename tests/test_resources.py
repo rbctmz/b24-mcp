@@ -78,8 +78,20 @@ def test_mcp_initialize_alias(app, client: TestClient) -> None:
     assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
 
 
-def test_mcp_get_healthcheck(client: TestClient) -> None:
+def test_mcp_get_entrypoint(app, client: TestClient) -> None:
     response = client.get("/mcp")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["method"] == "initialize"
+    params = payload["params"]
+    assert params["protocolVersion"] == {"major": 1, "minor": 0}
+    assert any(resource["uri"] == "crm/deals" for resource in params["resources"])
+
+
+def test_mcp_healthcheck(client: TestClient) -> None:
+    response = client.get("/mcp/health")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "message": "MCP endpoint is alive"}
