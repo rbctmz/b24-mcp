@@ -84,6 +84,9 @@ def create_app() -> FastAPI:
     return app
 
 
+app = create_app()
+
+
 def main() -> None:  # pragma: no cover
     import uvicorn
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 import asyncio
 import json
+from collections import deque
 from starlette.responses import StreamingResponse, JSONResponse
 
 from fastapi import APIRouter, Body, Depends, Request, Response, WebSocket, WebSocketDisconnect
@@ -74,13 +75,16 @@ def _handshake_payload(
 # for production multi-instance setups use Redis/other pubsub to fan-out events
 # across processes.
 SSE_CLIENTS: set[asyncio.Queue] = set()
+PENDING_SSE_EVENTS: deque[Dict[str, Any]] = deque()
 
 
 async def _broadcast_sse(message: Dict[str, Any]) -> None:
-    if not SSE_CLIENTS:
-        return
     if "jsonrpc" not in message:
         logger.warning("Attempted to broadcast non JSON-RPC payload over SSE")
+        return
+    if not SSE_CLIENTS:
+        PENDING_SSE_EVENTS.append(message)
+        logger.debug("Queued JSON-RPC payload for future SSE clients: %s", message)
         return
     for q in list(SSE_CLIENTS):
         try:
@@ -256,30 +260,45 @@ async def mcp_handshake(
                 logger.exception("Failed to broadcast resources/query to SSE clients")
             return rpc_response
         elif method == "tools/list":
-            return {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
                     "tools": [tool.model_dump() for tool in tool_registry.descriptors()]
-                }
+                },
             }
+            try:
+                asyncio.create_task(_broadcast_sse(rpc_response))
+            except Exception:
+                logger.exception("Failed to broadcast tools/list to SSE clients")
+            return rpc_response
         elif method == "resources/list":
-            return {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
                     "resources": [res.model_dump() for res in resource_registry.descriptors()]
-                }
+                },
             }
+            try:
+                asyncio.create_task(_broadcast_sse(rpc_response))
+            except Exception:
+                logger.exception("Failed to broadcast resources/list to SSE clients")
+            return rpc_response
         else:
-            return {
+            rpc_response = {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "error": {
                     "code": -32601,
                     "message": f"Method not found: {method}"
-                }
+                },
             }
+            try:
+                asyncio.create_task(_broadcast_sse(rpc_response))
+            except Exception:
+                logger.exception("Failed to broadcast error response to SSE clients")
+            return rpc_response
     else:
         # Обратная совместимость: трактуем произвольный JSON как запрос initialize
         payload = _handshake_payload(request, resource_registry, tool_registry)
@@ -565,7 +584,14 @@ async def mcp_sse(request: Request) -> StreamingResponse:
                     "params": payload,
                 }
             )
-            yield "data: " + init_event + "\n\n"
+            yield "event: message\ndata: " + init_event + "\n\n"
+            while PENDING_SSE_EVENTS:
+                pending = PENDING_SSE_EVENTS.popleft()
+                try:
+                    yield "event: message\ndata: " + json.dumps(pending) + "\n\n"
+                except Exception:
+                    logger.exception("Failed to serialize pending SSE payload")
+                    continue
         except Exception:
             logger.exception("Failed to send initial handshake over SSE")
 
@@ -576,7 +602,7 @@ async def mcp_sse(request: Request) -> StreamingResponse:
                 except asyncio.CancelledError:
                     break
                 try:
-                    yield f"data: {json.dumps(item)}\n\n"
+                    yield "event: message\n" + f"data: {json.dumps(item)}\n\n"
                 except Exception:
                     logger.exception("Failed to serialize SSE payload")
                     continue
