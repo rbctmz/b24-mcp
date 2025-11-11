@@ -13,6 +13,7 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 - HTTPX-based Bitrix24 client with retry/backoff
 - Async FastAPI application ready for Docker or local execution
 - Pytest suite with in-memory Bitrix24 client stubs
+- Claude Desktop stdio proxy (`mcp_stdio_proxy.py`) with configurable base URL/timeout via environment
 
 ## MCP Prompts and Cheat Sheets
 
@@ -124,6 +125,39 @@ docker run --rm -p 8000:8000 --env-file .env b24-mcp
 ```
 
 > **Note:** The provided `.env` file is mounted as environment variables inside the container. Ensure it contains valid Bitrix24 credentials before starting the container.
+
+### 6. Connect Claude Desktop via stdio proxy
+
+Use the included `mcp_stdio_proxy.py` script to bridge Claude Desktop (stdio-based MCP client) with the HTTP server:
+
+1. Ensure the MCP server is running locally (defaults to `http://127.0.0.1:8000`).
+2. Optional environment variables for the proxy:
+   - `MCP_PROXY_BASE_URL` – override the target server URL (defaults to `http://127.0.0.1:8000`).
+   - `MCP_PROXY_TIMEOUT` – request timeout in seconds (defaults to `30`).
+3. Update Claude Desktop settings (`~/Library/Application Support/Claude/Settings/settings.json`):
+
+   ```json
+   {
+     "mcpServers": {
+       "b24-mcp": {
+         "command": "/Users/gregkisel/Documents/GitHub/b24-mcp/.venv/bin/python",
+         "args": [
+           "/Users/gregkisel/Documents/GitHub/b24-mcp/mcp_stdio_proxy.py"
+         ],
+         "cwd": "/Users/gregkisel/Documents/GitHub/b24-mcp",
+         "env": {
+           "MCP_PROXY_BASE_URL": "http://127.0.0.1:8000",
+           "MCP_PROXY_TIMEOUT": "30"
+         },
+         "autoStart": false
+       }
+     }
+   }
+   ```
+
+   Adjust the paths if your checkout lives elsewhere or you use a different Python interpreter.
+
+4. Restart Claude Desktop and select the `b24-mcp` MCP server. The proxy skips JSON-RPC notifications (no `id`) to avoid spurious errors while forwarding responses untouched.
 
 ## Bitrix Token Requirements
 
@@ -237,18 +271,17 @@ operating system and restart the client after editing its config.
 ```jsonc
 {
   "mcpServers": {
-    "bitrix24": {
-      "command": "/Users/you/Documents/GitHub/b24-mcp/.venv/bin/uvicorn",
+    "b24-mcp": {
+      "command": "/Users/gregkisel/Documents/GitHub/b24-mcp/.venv/bin/python",
       "args": [
-        "mcp_server.app.main:app",
-        "--host", "127.0.0.1",
-        "--port", "8000",
-        "--reload"
+        "/Users/gregkisel/Documents/GitHub/b24-mcp/mcp_stdio_proxy.py"
       ],
+      "cwd": "/Users/gregkisel/Documents/GitHub/b24-mcp",
       "env": {
-        "BITRIX_BASE_URL": "https://your-portal.bitrix24.ru/rest",
-        "BITRIX_TOKEN": "xxxxx"
-      }
+        "MCP_PROXY_BASE_URL": "http://127.0.0.1:8000",
+        "MCP_PROXY_TIMEOUT": "30"
+      },
+      "autoStart": false
     }
   }
 }

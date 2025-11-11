@@ -13,6 +13,7 @@
 - Клиент для Битрикс24 на базе HTTPX с поддержкой повторных запросов и backoff
 - Асинхронное FastAPI-приложение, готовое к запуску в Docker или локально
 - Набор тестов Pytest с заглушками для клиента Битрикс24, работающими в памяти
+- Stdio-прокси для Claude Desktop (`mcp_stdio_proxy.py`) с настраиваемым URL и тайм-аутом через переменные окружения
 
 ## Подсказки MCP и шпаргалки
 
@@ -222,31 +223,30 @@ curl -sS http://127.0.0.1:8000/mcp/health | jq .
 
 ### Claude Desktop
 
-1. Убедитесь, что MCP-сервер запущен локально (`uvicorn mcp_server.app.main:app --reload`).
-2. Отредактируйте `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) или `%AppData%\Claude\claude_desktop_config.json` (Windows).
-3. Добавьте запись в раздел `mcpServers`:
+1. Запустите MCP-сервер (`uvicorn mcp_server.app.main:app --reload`).
+2. При необходимости задайте переменные окружения для прокси (`MCP_PROXY_BASE_URL`, `MCP_PROXY_TIMEOUT`).
+3. Отредактируйте `~/Library/Application Support/Claude/Settings/settings.json` (macOS) или `%AppData%\Claude\Settings\settings.json` (Windows) и добавьте запись в `mcpServers`:
 
-```jsonc
+```json
 {
   "mcpServers": {
-    "bitrix24": {
-      "command": "/Users/you/Documents/GitHub/b24-mcp/.venv/bin/uvicorn",
+    "b24-mcp": {
+      "command": "/Users/gregkisel/Documents/GitHub/b24-mcp/.venv/bin/python",
       "args": [
-        "mcp_server.app.main:app",
-        "--host", "127.0.0.1",
-        "--port", "8000",
-        "--reload"
+        "/Users/gregkisel/Documents/GitHub/b24-mcp/mcp_stdio_proxy.py"
       ],
+      "cwd": "/Users/gregkisel/Documents/GitHub/b24-mcp",
       "env": {
-        "BITRIX_BASE_URL": "https://your-portal.bitrix24.ru/rest",
-        "BITRIX_TOKEN": "xxxxx"
-      }
+        "MCP_PROXY_BASE_URL": "http://127.0.0.1:8000",
+        "MCP_PROXY_TIMEOUT": "30"
+      },
+      "autoStart": false
     }
   }
 }
 ```
 
-Перезапустите Claude Desktop, и MCP-сервер Битрикс24 появится в меню MCP-серверов.
+При необходимости подправьте пути, если репозиторий расположен в другом каталоге или используется иной интерпретатор Python. После сохранения перезапустите Claude Desktop и выберите сервер `b24-mcp`. Stdio-прокси не отправляет ответы на JSON-RPC уведомления без `id`, поэтому всплывающие ошибки исчезнут, а ответы MCP будут передаваться без изменений.
 
 ### Codex CLI
 
