@@ -6,44 +6,45 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 - MCP resources for listing deals, leads, contacts, users, and tasks
 - MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks)
-- Локализованные подсказки для MCP (русский язык), включая structuredContent и предупреждения о пропущенных аргументах
-- Ответы инструментов соответствуют CallToolResult (поля `content`, `structuredContent`, `isError`) совместимому с fastmcp
+- Localized MCP prompts (Russian), including structuredContent and warnings for missing arguments
+- Tool responses conform to CallToolResult (fields `content`, `structuredContent`, `isError`) compatible with fastmcp
+- Uniform warnings and recommended date filters for all tools, allowing clients to automatically retry requests with adjustments
 - Configurable via environment variables (`.env`)
 - HTTPX-based Bitrix24 client with retry/backoff
 - Async FastAPI application ready for Docker or local execution
 - Pytest suite with in-memory Bitrix24 client stubs
 
-## Подсказки MCP и шпаргалки
+## MCP Prompts and Cheat Sheets
 
-- Все тексты подсказок, описания инструментов и готовые payload'ы хранятся в `mcp_server/app/docs/prompts_ru.md`. При изменении файла сервер автоматически подхватывает новые инструкции без правок в коде.
-- Ответ `initialize` содержит `structuredInstructions` и `instructionNotes` с примерами: как получить свежие лиды (`order = {"DATE_MODIFY": "DESC"}`) и как задавать диапазоны дат через `>=DATE_CREATE`, `<=DATE_CREATE`.
-- MCP-инструменты возвращают `structuredContent` с полным ответом Bitrix24 и предупреждениями. Если вызов `getLeads` не содержит диапазона по дате, сервер добавляет сообщение и логирует предупреждение.
-- Доступен ресурс `bitrix24_leads_guide`, который отдаёт шпаргалку с типовыми сценариями (свежие лиды, выборка за сегодня, фильтр по статусу) и правилами комбинирования фильтров.
-- Структура `prompts_ru.md` предусматривает локализацию: для новой локали достаточно добавить файл `prompts_<locale>.md` и обновить настройки.
+- All prompt texts, tool descriptions, and ready-made payloads are stored in `mcp_server/app/docs/prompts_ru.md`. When the file is changed, the server automatically picks up new instructions without code modifications.
+- The `initialize` response contains `structuredInstructions` and `instructionNotes` with examples: how to get fresh leads (`order = {"DATE_MODIFY": "DESC"}`) and how to set date ranges via `>=DATE_CREATE`, `<=DATE_CREATE`.
+- MCP tools return `structuredContent` with the full Bitrix24 response and warnings. If no date range is provided, any tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`) adds a message, recommended filters, and `suggestedFix`, allowing fastmcp/SGR to automatically retry the request.
+- The `bitrix24_leads_guide` resource provides a cheat sheet with typical scenarios (fresh leads, today's selection, status filter) and rules for combining filters.
+- The `prompts_ru.md` structure provides for localization: for a new locale, it is enough to add a `prompts_<locale>.md` file and update the settings.
 
-## Формат ответа инструментов (CallToolResult)
+## Tool Response Format (CallToolResult)
 
-- MCP инструменты (`/mcp/tool/call`, JSON-RPC `tools/call`, WebSocket/SSE) возвращают словарь формата:
+- MCP tools (`/mcp/tool/call`, JSON-RPC `tools/call`, WebSocket/SSE) return a dictionary in the format:
 
 ```json
 {
   "content": [
-    {"type": "text", "text": "crm/leads: получено 42 записей. Полный ответ в structuredContent.result."},
-    {"type": "text", "text": "Внимание: Добавьте фильтры диапазона ..."} // опционально
+    {"type": "text", "text": "crm/leads: 42 records received. Full response in structuredContent.result."},
+    {"type": "text", "text": "Warning: Add range filters ..."} // optional
   ],
   "structuredContent": {
     "metadata": {"provider": "bitrix24", "tool": "getLeads", "resource": "crm/leads"},
     "request": {"order": {"DATE_MODIFY": "DESC"}, "filter": {...}},
-    "result": {...},            // исходный ответ Bitrix24
-    "warnings": [...]           // опционально
+    "result": {...},            // original Bitrix24 response
+    "warnings": [...]           // optional
   },
   "isError": false
 }
 ```
 
-- Поле `structuredContent` хранит исходный REST payload, поэтому клиенты могут продолжать использовать `metadata` и `result`.
-- Предупреждения о пропущенных датах и других критичных аргументах добавляются в `structuredContent.warnings` и дублируются в `content`.
-- SSE/WebSocket трансляции используют тот же CallToolResult, что исключает ошибки валидатора fastmcp.
+- The `structuredContent` field stores the original REST payload, so clients can continue to use `metadata` and `result`.
+- Warnings about missing dates and other critical arguments are added to `structuredContent.warnings`, and specific filters and sorts to apply are available in `structuredContent.suggestedFix.filters`.
+- SSE/WebSocket transmissions use the same CallToolResult, which eliminates fastmcp validator errors.
 
 ## Project Layout
 
@@ -174,10 +175,10 @@ Testing examples:
 
 ```bash
 # quick HTTP index check
-curl -sS http://127.0.0.1:8000/mcp/index | jq .
+curl -sS http://127.0.0.1:8000/mcp/index | jq . 
 
 # JSON-RPC handshake over HTTP GET
-curl -sS http://127.0.0.1:8000/mcp | jq .
+curl -sS http://127.0.0.1:8000/mcp | jq . 
 
 # websocat with explicit Origin header (recommended when debugging CORS)
 websocat -H 'Origin: http://localhost' ws://127.0.0.1:8000/mcp
@@ -203,7 +204,7 @@ How it works:
 
 ```bash
 # Tail the HTTP index
-curl -sS http://127.0.0.1:8000/mcp/index | jq .
+curl -sS http://127.0.0.1:8000/mcp/index | jq . 
 
 # Connect to SSE (example using curl) — note: curl will not nicely render continuous SSE output
 # but can be used to test the handshake
@@ -212,10 +213,10 @@ curl -v http://127.0.0.1:8000/mcp/sse
 # Send initialize over HTTP JSON-RPC (you should also see this payload on the SSE connection)
 curl -sS -X POST http://127.0.0.1:8000/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq .
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | jq . 
 
 # Health endpoint
-curl -sS http://127.0.0.1:8000/mcp/health | jq .
+curl -sS http://127.0.0.1:8000/mcp/health | jq . 
 ```
 
 For production, replace curl with a proper SSE client (browser EventSource or an SSE-capable client library) and secure the connection with TLS (`https`/`wss`).

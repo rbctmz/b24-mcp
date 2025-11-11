@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 import logging
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from ..bitrix_client import BitrixAPIError, BitrixClient
 from ..exceptions import ToolNotFoundError, UpstreamError
@@ -56,8 +56,16 @@ async def _call_bitrix(
 
     if warnings:
         structured_payload["warnings"] = warnings
-        for warning_text in warnings:
-            content_messages.append({"type": "text", "text": f"⚠️ {warning_text}"})
+        suggested_filters = []
+        for warning in warnings:
+            message = warning.get("message") if isinstance(warning, dict) else str(warning)
+            appendix = ""
+            if isinstance(warning, dict) and warning.get("suggested_filters"):
+                appendix = f" Рекомендуемые фильтры: {warning['suggested_filters']}"
+                suggested_filters.append(warning["suggested_filters"])
+            content_messages.append({"type": "text", "text": f"⚠️ {message}{appendix}"})
+        if suggested_filters:
+            structured_payload["suggestedFix"] = {"filters": suggested_filters}
 
     items_count: Optional[int] = None
     if isinstance(response, dict):
@@ -131,16 +139,16 @@ class ToolRegistry:
             raise ToolNotFoundError(request.tool)
         return await handler(self._client, request.params)
 
-    def _collect_warnings(self, tool_name: str, params: Dict[str, Any]) -> Optional[List[str]]:
+    def _collect_warnings(self, tool_name: str, params: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
         messages = self._evaluate_warnings(tool_name, params)
         if messages:
             logger.info("[%s] Issued warnings: %s", tool_name, messages)
             return messages
         return None
 
-    def _evaluate_warnings(self, tool_name: str, params: Dict[str, Any]) -> List[str]:
+    def _evaluate_warnings(self, tool_name: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
         rules = self._warning_rules.get(tool_name, []) or []
-        messages: List[str] = []
+        messages: List[Dict[str, Any]] = []
         for rule in rules:
             check_type = rule.get("check")
             message = rule.get("message")
@@ -148,7 +156,13 @@ class ToolRegistry:
                 continue
             if check_type == "require_date_range":
                 if self._requires_date_range_warning(rule, params):
-                    messages.append(self._format_warning_message(message))
+                    warning_data: Dict[str, Any] = {
+                        "message": self._format_warning_message(message),
+                    }
+                    suggestion = self._build_date_range_suggestion(rule)
+                    if suggestion:
+                        warning_data["suggested_filters"] = suggestion
+                    messages.append(warning_data)
             else:
                 logger.debug("[%s] Unknown warning check type: %s", tool_name, check_type)
         return messages
@@ -189,7 +203,65 @@ class ToolRegistry:
         return template.format(
             today_start=start.isoformat(),
             today_end=end.isoformat(),
+            today_date=start.date().isoformat(),
+            today_start_no_tz=start.replace(tzinfo=None).isoformat(),
+            today_end_no_tz=end.replace(tzinfo=None).isoformat(),
         )
+
+    @staticmethod
+    def _build_date_range_suggestion(rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        suggestion_type = rule.get("suggestion", "today")
+        field_name = rule.get("suggestion_field", "DATE_CREATE")
+        if not isinstance(field_name, str) or not field_name:
+            field_name = "DATE_CREATE"
+        format_hint = rule.get("suggestion_format", "iso")
+        now = datetime.now(timezone.utc)
+        if suggestion_type == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start.replace(hour=23, minute=59, second=59)
+        elif suggestion_type == "yesterday":
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = today_start - timedelta(days=1)
+            end = today_start - timedelta(seconds=1)
+        else:
+            return None
+        if format_hint == "date":
+            default_start_value = start.date().isoformat()
+            default_end_value = end.date().isoformat()
+        elif format_hint == "datetime_no_tz":
+            default_start_value = start.replace(tzinfo=None).isoformat()
+            default_end_value = end.replace(tzinfo=None).isoformat()
+        else:
+            default_start_value = start.isoformat()
+            default_end_value = end.isoformat()
+
+        placeholders = {
+            "today_start": start.isoformat(),
+            "today_end": end.isoformat(),
+            "today_date": start.date().isoformat(),
+            "today_start_no_tz": start.replace(tzinfo=None).isoformat(),
+            "today_end_no_tz": end.replace(tzinfo=None).isoformat(),
+            "range_start": default_start_value,
+            "range_end": default_end_value,
+        }
+
+        template_filters = rule.get("suggested_filters")
+        if isinstance(template_filters, dict) and template_filters:
+            formatted: Dict[str, Any] = {}
+            for key, value in template_filters.items():
+                if isinstance(value, str):
+                    try:
+                        formatted[key] = value.format(**placeholders)
+                    except KeyError:
+                        formatted[key] = value
+                else:
+                    formatted[key] = value
+            return formatted
+
+        return {
+            f">={field_name}": default_start_value,
+            f"<={field_name}": default_end_value,
+        }
 
     async def _get_deals(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
         warnings = self._collect_warnings("getDeals", params)

@@ -53,7 +53,53 @@
       {
         "check": "require_date_range",
         "fields": ["DATE_CREATE", "DATE_MODIFY"],
-        "message": "Добавьте фильтры диапазона (`>=DATE_CREATE` и `<=DATE_CREATE` либо аналогичные по DATE_MODIFY), чтобы ограничить выборку и повысить точность. Пример на текущий день: {{\">=DATE_CREATE\": \"{today_start}\", \"<=DATE_CREATE\": \"{today_end}\"}}."
+        "message": "Добавьте фильтры диапазона (`>=DATE_CREATE` и `<=DATE_CREATE` либо аналогичные по DATE_MODIFY), чтобы ограничить выборку и повысить точность. Пример на текущий день: {{\">=DATE_CREATE\": \"{today_start}\", \"<=DATE_CREATE\": \"{today_end}\"}}.",
+        "suggestion": "today",
+        "suggestion_field": "DATE_CREATE",
+        "suggested_filters": {
+          ">=DATE_CREATE": "{today_start}",
+          "<=DATE_CREATE": "{today_end}"
+        }
+      }
+    ],
+    "getDeals": [
+      {
+        "check": "require_date_range",
+        "fields": ["DATE_CREATE", "DATE_MODIFY"],
+        "message": "Добавьте фильтры диапазона (`>=DATE_CREATE` и `<=DATE_CREATE` либо аналогичные по DATE_MODIFY), чтобы ограничить выборку и повысить точность. Пример на текущий день: {{\">=DATE_CREATE\": \"{today_start}\", \"<=DATE_CREATE\": \"{today_end}\"}}.",
+        "suggestion": "today",
+        "suggestion_field": "DATE_CREATE",
+        "suggested_filters": {
+          ">=DATE_CREATE": "{today_start}",
+          "<=DATE_CREATE": "{today_end}"
+        }
+      }
+    ],
+    "getContacts": [
+      {
+        "check": "require_date_range",
+        "fields": ["DATE_CREATE", "DATE_MODIFY"],
+        "message": "Добавьте фильтры диапазона (`>=DATE_CREATE` и `<=DATE_CREATE` либо аналогичные по DATE_MODIFY), чтобы ограничить выборку и повысить точность. Пример на текущий день: {{\">=DATE_CREATE\": \"{today_start}\", \"<=DATE_CREATE\": \"{today_end}\"}}.",
+        "suggestion": "today",
+        "suggestion_field": "DATE_CREATE",
+        "suggested_filters": {
+          ">=DATE_CREATE": "{today_start}",
+          "<=DATE_CREATE": "{today_end}"
+        }
+      }
+    ],
+    "getTasks": [
+      {
+        "check": "require_date_range",
+        "fields": ["CREATED_DATE", "CHANGED_DATE"],
+        "message": "Добавьте фильтры диапазона (`>=CHANGED_DATE` и `<=CHANGED_DATE` либо аналогичные по CREATED_DATE), чтобы ограничить выборку и повысить точность. Используйте формат `YYYY-MM-DDTHH:MM:SS` без часового пояса. Пример на текущий день: {{\">=CHANGED_DATE\": \"{today_start_no_tz}\", \"<=CHANGED_DATE\": \"{today_end_no_tz}\"}}.",
+        "suggestion": "today",
+        "suggestion_field": "CHANGED_DATE",
+        "suggestion_format": "datetime_no_tz",
+        "suggested_filters": {
+          ">=CHANGED_DATE": "{today_start_no_tz}",
+          "<=CHANGED_DATE": "{today_end_no_tz}"
+        }
       }
     ]
   },

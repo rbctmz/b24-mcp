@@ -57,7 +57,7 @@ class ToolCallResponse(BaseModel):
     result: Dict[str, Any]
     structuredContent: Optional[Dict[str, Any]] = None
     content: Optional[List[Dict[str, Any]]] = None
-    warnings: Optional[List[str]] = None
+    warnings: Optional[List[Dict[str, Any]]] = None
     is_error: bool = False
 
     def model_dump(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
@@ -99,7 +99,11 @@ class ToolCallResponse(BaseModel):
             ]
             if self.warnings:
                 for warning in self.warnings:
-                    content_payload.append({"type": "text", "text": f"Внимание: {warning}"})
+                    message = warning.get("message") if isinstance(warning, dict) else str(warning)
+                    appendix = ""
+                    if isinstance(warning, dict) and warning.get("suggested_filters"):
+                        appendix = f" Рекомендуемые фильтры: {warning['suggested_filters']}"
+                    content_payload.append({"type": "text", "text": f"⚠️ {message}{appendix}"})
 
         return {
             "content": content_payload,
