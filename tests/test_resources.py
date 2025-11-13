@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Dict
 
 from fastapi.testclient import TestClient
 
@@ -10,6 +11,8 @@ def test_resource_query_deals(app, client: TestClient) -> None:
         "result": [{"ID": "1", "TITLE": "Test deal"}],
         "total": 1,
     }
+    app.state.bitrix_client.responses["crm.dealcategory.list"] = {"result": []}
+    app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {"result": []}
 
     response = client.post(
         "/mcp/resource/query",
@@ -22,6 +25,464 @@ def test_resource_query_deals(app, client: TestClient) -> None:
     assert body["metadata"]["provider"] == "bitrix24"
     assert body["data"][0]["ID"] == "1"
     assert body["next_cursor"] is None
+
+
+def test_resource_lead_statuses(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.status.list"] = {
+        "result": [
+            {"STATUS_ID": "NEW", "NAME": "Новый"},
+            {"STATUS_ID": "CONVERTED", "NAME": "Сконвертирован"},
+        ],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_statuses", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "crm/lead_statuses"
+    assert body["data"][0]["STATUS_ID"] == "NEW"
+    assert app.state.bitrix_client.calls[0] == ("crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}})
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={
+            "resource": "crm/lead_statuses",
+            "params": {"filter": {"STATUS_ID": "CONVERTED"}},
+        },
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[1] == (
+        "crm.status.list",
+        {"filter": {"STATUS_ID": "CONVERTED", "ENTITY_ID": "STATUS"}},
+    )
+
+
+def test_resource_lead_statuses_caching(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.status.list"] = {
+        "result": [{"STATUS_ID": "NEW", "NAME": "Новый"}],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_statuses", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_statuses", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+
+def test_resource_lead_sources(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.status.list"] = {
+        "result": [
+            {"ID": "CALL", "NAME": "Звонок"},
+            {"ID": "ADVERTISING", "NAME": "Реклама"},
+        ],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_sources", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "crm/lead_sources"
+    assert body["data"][1]["ID"] == "ADVERTISING"
+    assert app.state.bitrix_client.calls[0] == ("crm.status.list", {"filter": {"ENTITY_ID": "SOURCE"}})
+
+
+def test_resource_lead_sources_custom_filter(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.status.list"] = {
+        "result": [{"ID": "SELF", "NAME": "Существующий клиент"}],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_sources", "params": {"filter": {"ID": "SELF"}}},
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[0] == (
+        "crm.status.list",
+        {"filter": {"ID": "SELF", "ENTITY_ID": "SOURCE"}},
+    )
+
+
+def test_resource_lead_sources_caching(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.status.list"] = {
+        "result": [{"ID": "SELF", "NAME": "Существующий клиент"}],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_sources", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/lead_sources", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+
+def test_resource_deal_categories(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.dealcategory.list"] = {
+        "result": [
+            {"ID": 0, "NAME": "Основная"},
+            {"ID": 3, "NAME": "Продажи"},
+        ]
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deal_categories", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "crm/deal_categories"
+    assert body["data"][1]["ID"] == 3
+    assert app.state.bitrix_client.calls[0] == ("crm.dealcategory.list", {})
+
+
+def test_resource_deal_categories_caching(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.dealcategory.list"] = {
+        "result": [{"ID": 0, "NAME": "Основная"}],
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deal_categories", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deal_categories", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+
+def test_resource_deal_stages_default_category(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {
+        "result": [
+            {"ID": "NEW", "NAME": "Новая", "CATEGORY_ID": 0},
+        ]
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deal_stages", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "crm/deal_stages"
+    assert body["data"][0]["ID"] == "NEW"
+    assert app.state.bitrix_client.calls[0] == ("crm.dealcategory.stage.list", {"id": 0})
+
+
+def test_resource_deal_stages_with_category_alias(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {
+        "result": [
+            {"ID": "WON", "NAME": "Успешно", "CATEGORY_ID": 3},
+        ]
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deal_stages", "params": {"categoryId": 3}},
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[0] == ("crm.dealcategory.stage.list", {"id": 3})
+
+
+def test_resource_task_statuses(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {
+            "STATUS": {
+                "type": "enumeration",
+                "items": [
+                    {"ID": "1", "NAME": "Новая"},
+                    {"ID": "5", "NAME": "Завершена"},
+                ],
+            }
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/statuses", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "tasks/statuses"
+    assert body["data"][0]["ID"] == "1"
+    assert app.state.bitrix_client.calls[0] == ("tasks.task.getFields", {})
+
+
+def test_resource_task_statuses_caching(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {
+            "STATUS": {
+                "type": "enumeration",
+                "items": [
+                    {"ID": "1", "NAME": "Новая"},
+                ],
+            }
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/statuses", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/statuses", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+
+def test_resource_task_statuses_enumeration_dict(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {"STATUS": {"type": "enumeration", "values": {"1": {"NAME": "Новая"}, "5": {"NAME": "Завершена"}}}}
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/statuses", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["ID"] for item in body["data"]} == {"1", "5"}
+    assert any(item.get("NAME") == "Завершена" for item in body["data"])
+
+
+def test_resource_task_statuses_nested_fields_labels(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {
+            "fields": {
+                "STATUS": {
+                    "type": "enumeration",
+                    "labels": {
+                        "1": "Новая",
+                        "2": "В работе",
+                    },
+                }
+            }
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/statuses", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["ID"] for item in body["data"]} == {"1", "2"}
+    assert any(item.get("NAME") == "В работе" for item in body["data"])
+
+
+def test_resource_task_priorities(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {
+            "PRIORITY": {
+                "type": "enumeration",
+                "values": {"0": {"NAME": "Низкий"}, "2": {"NAME": "Высокий"}},
+            }
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/priorities", "params": {}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "tasks/priorities"
+    assert {item["ID"] for item in body["data"]} == {"0", "2"}
+    assert app.state.bitrix_client.calls[0] == ("tasks.task.getFields", {})
+
+
+def test_resource_task_priorities_caching(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.getFields"] = {
+        "result": {"PRIORITY": {"type": "enumeration", "labels": {"0": "Низкий"}}}
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/priorities", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "tasks/priorities", "params": {}},
+    )
+    assert response.status_code == 200
+    assert len(app.state.bitrix_client.calls) == 1
+
+
+def test_leads_enriched_meta(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.lead.list"] = {
+        "result": [
+            {
+                "ID": "11",
+                "ASSIGNED_BY_ID": 101,
+                "STATUS_ID": "NEW",
+                "SOURCE_ID": "CALL",
+            }
+        ]
+    }
+
+    def status_list(payload: Dict[str, Any]) -> Dict[str, Any]:
+        entity_id = payload.get("filter", {}).get("ENTITY_ID")
+        if entity_id == "STATUS":
+            return {"result": [{"STATUS_ID": "NEW", "NAME": "Новый"}]}
+        if entity_id == "SOURCE":
+            return {"result": [{"ID": "CALL", "NAME": "Звонок"}]}
+        raise AssertionError(f"Unexpected ENTITY_ID {entity_id}")
+
+    app.state.bitrix_client.responses["crm.status.list"] = status_list
+    app.state.bitrix_client.responses["user.get"] = lambda payload: {
+        "result": {
+            "ID": payload.get("ID"),
+            "NAME": "Alice",
+            "LAST_NAME": "Smith",
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/leads", "params": {"select": ["ID", "ASSIGNED_BY_ID", "STATUS_ID", "SOURCE_ID"]}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    meta = body["data"][0]["_meta"]
+    assert meta["responsible"]["name"] == "Alice Smith"
+    assert meta["status"]["name"] == "Новый"
+    assert meta["source"]["name"] == "Звонок"
+
+
+def test_deals_enriched_meta(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.deal.list"] = {
+        "result": [
+            {
+                "ID": "5",
+                "ASSIGNED_BY_ID": 77,
+                "CATEGORY_ID": 3,
+                "STAGE_ID": "C3:WON",
+            }
+        ]
+    }
+
+    app.state.bitrix_client.responses["crm.dealcategory.list"] = {
+        "result": [
+            {"ID": "3", "NAME": "Enterprise"},
+        ]
+    }
+
+    def stage_list(payload: Dict[str, Any]) -> Dict[str, Any]:
+        category_id = payload.get("id")
+        if category_id in (3, "3"):
+            return {"result": [{"STATUS_ID": "C3:WON", "NAME": "Won"}]}
+        return {"result": []}
+
+    app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = stage_list
+    app.state.bitrix_client.responses["user.get"] = lambda payload: {
+        "result": {
+            "ID": payload.get("ID"),
+            "NAME": "John",
+            "LAST_NAME": "Doe",
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/deals", "params": {"select": ["ID", "CATEGORY_ID", "STAGE_ID", "ASSIGNED_BY_ID"]}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    meta = body["data"][0]["_meta"]
+    assert meta["responsible"]["name"] == "John Doe"
+    assert meta["category"]["name"] == "Enterprise"
+    assert meta["stage"]["name"] == "Won"
+
+
+def test_tasks_enriched_meta(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["tasks.task.list"] = {
+        "result": [
+            {
+                "ID": "201",
+                "RESPONSIBLE_ID": 501,
+                "CREATED_BY": 502,
+                "STATUS": "5",
+                "PRIORITY": "2",
+            }
+        ]
+    }
+
+    app.state.bitrix_client.responses["tasks.task.getFields"] = lambda payload: {
+        "result": {
+            "STATUS": {
+                "items": [
+                    {"ID": "5", "NAME": "Завершена"},
+                ]
+            },
+            "PRIORITY": {
+                "values": {"2": {"NAME": "Высокий"}},
+            },
+        }
+    }
+
+    app.state.bitrix_client.responses["user.get"] = lambda payload: {
+        "result": {
+            "ID": payload.get("ID"),
+            "NAME": f"User {payload.get('ID')}",
+            "LAST_NAME": "Test",
+        }
+    }
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/tasks", "params": {"select": ["ID", "RESPONSIBLE_ID", "STATUS", "PRIORITY"]}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    meta = body["data"][0]["_meta"]
+    assert meta["responsible"]["name"] == "User 501 Test"
+    assert meta["creator"]["name"] == "User 502 Test"
+    assert meta["status"]["name"] == "Завершена"
+    assert meta["priority"]["name"] == "Высокий"
 
 
 def test_resource_query_with_pagination(app, client: TestClient) -> None:
@@ -141,6 +602,8 @@ def test_mcp_resources_query_jsonrpc(app, client: TestClient) -> None:
         "result": [{"ID": "1", "TITLE": "JSONRPC Deal"}],
         "total": 1,
     }
+    app.state.bitrix_client.responses["crm.dealcategory.list"] = {"result": []}
+    app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {"result": []}
 
     response = client.post(
         "/mcp",

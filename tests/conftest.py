@@ -29,9 +29,13 @@ class StubBitrixClient:
         if method not in self.responses:
             raise AssertionError(f"Unexpected Bitrix method '{method}' invoked without stub")
         response = self.responses[method]
-        if isinstance(response, Exception):
-            raise response
-        return response
+        if callable(response):
+            result = response(payload or {})
+        else:
+            result = response
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def close(self) -> None:
         return None

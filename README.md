@@ -4,11 +4,12 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 ## Features
 
-- MCP resources for listing deals, leads, contacts, users, and tasks
+- MCP resources for listing deals, leads, contacts, users, tasks, and Bitrix24 dictionaries (lead stages/sources, deal categories/stages, task statuses/priorities)
 - MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks)
 - Localized MCP prompts (Russian), including structuredContent and warnings for missing arguments
 - Tool responses conform to CallToolResult (fields `content`, `structuredContent`, `isError`) compatible with fastmcp
 - Uniform warnings and recommended date filters for all tools, allowing clients to automatically retry requests with adjustments
+- Resource responses include `_meta` blocks with human-readable labels (responsible user, stage, source, priority, etc.)
 - Configurable via environment variables (`.env`)
 - HTTPX-based Bitrix24 client with retry/backoff
 - Async FastAPI application ready for Docker or local execution
@@ -46,6 +47,40 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 - The `structuredContent` field stores the original REST payload, so clients can continue to use `metadata` and `result`.
 - Warnings about missing dates and other critical arguments are added to `structuredContent.warnings`, and specific filters and sorts to apply are available in `structuredContent.suggestedFix.filters`.
 - SSE/WebSocket transmissions use the same CallToolResult, which eliminates fastmcp validator errors.
+
+## Resource Response Metadata (`_meta`)
+
+- Every entity returned via `crm/deals`, `crm/leads`, and `crm/tasks` is enriched with a `_meta` section that contains human-readable descriptors resolved through cached Bitrix24 dictionaries:
+
+```json
+{
+  "ID": "123",
+  "ASSIGNED_BY_ID": "42",
+  "STATUS_ID": "NEW",
+  "_meta": {
+    "responsible": {
+      "id": "42",
+      "name": "Анна Иванова",
+      "email": "anna@example.com"
+    },
+    "status": {
+      "id": "NEW",
+      "name": "Новый"
+    },
+    "source": {
+      "id": "CALL",
+      "name": "Звонок"
+    }
+  }
+}
+```
+
+- Available enrichments today:
+  - Deals: `responsible`, `category`, `stage`
+  - Leads: `responsible`, `status`, `source`
+  - Tasks: `responsible`, `creator`, `status`, `priority`
+- Each `_meta.<key>` entry exposes an `id`, a `name`, and `raw` (original Bitrix24 dictionary entry) so MCP clients can keep working with the underlying IDs when needed.
+- Cached dictionaries (`crm/lead_statuses`, `crm/lead_sources`, `crm/deal_categories`, `crm/deal_stages`, `tasks/statuses`, `tasks/priorities`) are also exposed as standalone MCP resources for direct lookups.
 
 ## Project Layout
 
