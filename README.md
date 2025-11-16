@@ -4,12 +4,14 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 ## Features
 
-- MCP resources for listing deals, leads, contacts, users, tasks, and Bitrix24 dictionaries (lead stages/sources, deal categories/stages, task statuses/priorities)
+- MCP resources for listing deals, leads, contacts, users, tasks, currencies, and Bitrix24 dictionaries (lead stages/sources, deal categories/stages, task statuses/priorities)
 - MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks)
 - Localized MCP prompts (Russian), including structuredContent and warnings for missing arguments
 - Tool responses conform to CallToolResult (fields `content`, `structuredContent`, `isError`) compatible with fastmcp
 - Uniform warnings and recommended date filters for all tools, allowing clients to automatically retry requests with adjustments
 - Resource responses include `_meta` blocks with human-readable labels (responsible user, stage, source, priority, etc.)
+- Tool responses for `getLeads` now reuse the cached `crm/leads` dictionary so they ship the same `_meta` data (responsible, creator, modifier, status, source, currency), expose `structuredContent.aggregates` with counts, include `structuredContent.hints.copyableFilter` (примеры недельного фильтра/iter) so агент может копировать фильтр для следующего запроса, а предупреждения по `toolWarnings.getLeads` больше не приводят только к диапазону «сегодня» — теперь пример показывает последнюю неделю с `>=DATE_CREATE`/`<=DATE_CREATE`.
+- Date-range hints, warnings, and weekly samples respect a configurable timezone (`SERVER_TIMEZONE`, default `UTC`), so the generated `YYYY-MM-DDTHH:MM:SS±HH:MM` boundaries match your portal’s local day.
 - Configurable via environment variables (`.env`)
 - HTTPX-based Bitrix24 client with retry/backoff
 - Async FastAPI application ready for Docker or local execution
@@ -42,11 +44,30 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
   },
   "isError": false
 }
-```
+mcp_server/
+  app/
+    main.py            # FastAPI application factory and lifespan management
+    settings.py        # Pydantic settings loaded from environment
+    bitrix_client.py   # Async HTTP client wrapper for Bitrix24 REST API
+    exceptions.py      # Shared exception types for MCP responses
+    dependencies.py    # FastAPI dependencies for resource/tool registries
+    mcp/
+      schemas.py       # Pydantic models for MCP requests/responses
+      resources.py     # Resource registry (crm/deals, crm/leads, ...)
+      tools.py         # Tool registry (getDeals, getLeads, ...)
+      routes.py        # MCP endpoints (`/mcp/index`, `/mcp/resource/query`, `/mcp/tool/call`)
+tests/
+  test_resources.py    # Resource query tests
+  test_tools.py        # Tool call tests
+  conftest.py          # Shared fixtures and settings overrides
+mmp@m copypaste? Wait patch wants to change line 105 from ` ``` ` to ` ```text `. Need patch near that line. We'll produce patch.
 
 - The `structuredContent` field stores the original REST payload, so clients can continue to use `metadata` and `result`.
 - Warnings about missing dates and other critical arguments are added to `structuredContent.warnings`, and specific filters and sorts to apply are available in `structuredContent.suggestedFix.filters`.
 - SSE/WebSocket transmissions use the same CallToolResult, which eliminates fastmcp validator errors.
+- For list tools the server additionally exposes `structuredContent.pagination` (`limit`, `start`, `next`, `total`, `fetched`), so you can immediately report the total count or use `next` to page through the full selection.
+- For dictionaries like `crm/lead_statuses` and `crm/deal_stages` we now include each stage’s `group`/`groupName` derived from its semantics (`process` → «В работе», `success` → «Заключена», `failure` → «Провалена»), so agents can filter or aggregate by status groups directly.
+- `getLeads` now supports `statusSemantics` (or alias `groupSemantics`) — a list of semantic groups (`process`, `success`, `failure`). The server resolves them into the corresponding `STATUS_ID` values before handing the filter to Bitrix, so you can request “лиды в работе” without managing the ID list yourself.
 
 ## Resource Response Metadata (`_meta`)
 
@@ -77,14 +98,14 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 - Available enrichments today:
   - Deals: `responsible`, `category`, `stage`
-  - Leads: `responsible`, `status`, `source`
+  - Leads: `responsible`, `creator`, `modifier`, `status`, `source`, `currency`
   - Tasks: `responsible`, `creator`, `status`, `priority`
 - Each `_meta.<key>` entry exposes an `id`, a `name`, and `raw` (original Bitrix24 dictionary entry) so MCP clients can keep working with the underlying IDs when needed.
-- Cached dictionaries (`crm/lead_statuses`, `crm/lead_sources`, `crm/deal_categories`, `crm/deal_stages`, `tasks/statuses`, `tasks/priorities`) are also exposed as standalone MCP resources for direct lookups.
+- Cached dictionaries (`crm/currencies`, `crm/lead_statuses`, `crm/lead_sources`, `crm/deal_categories`, `crm/deal_stages`, `tasks/statuses`, `tasks/priorities`) are also exposed as standalone MCP resources for direct lookups.
 
 ## Project Layout
 
-```
+```text
 mcp_server/
   app/
     main.py            # FastAPI application factory and lifespan management
@@ -119,6 +140,7 @@ Update the following values:
 - `BITRIX_TOKEN`: webhook key or OAuth access token
 - `BITRIX_INSTANCE_NAME` (optional): identifier used in MCP metadata
 - `SERVER_*`: customize local server host/port/log level if required
+- `SERVER_TIMEZONE` (optional): IANA timezone (default `UTC`) used when building date-range warnings/hints so agents always see consistent local boundaries.
 
 ### 2. Install dependencies
 
@@ -267,8 +289,7 @@ resource results to connected SSE clients.
 
 How it works:
 - Connect a client to `GET /mcp/sse` to receive events (Content-Type `text/event-stream`).
-- Send JSON-RPC requests via `POST /mcp` (the server will reply to the POST and
-  also broadcast results to SSE subscribers).
+- Send JSON-RPC requests via `POST /mcp` (the server will reply to the POST and also broadcast results to SSE subscribers).
 - For local testing use the following commands:
 
 ```bash

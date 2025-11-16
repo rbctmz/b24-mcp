@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .bitrix_client import BitrixClient
+from .mcp.date_ranges import DateRangeBuilder, resolve_timezone
 from .mcp.routes import OAUTH_DISCOVERY_PAYLOAD, router as mcp_router
 from .mcp.resources import ResourceRegistry
 from .mcp.tools import ToolRegistry
@@ -39,7 +40,8 @@ def create_app() -> FastAPI:
     _configure_logging(settings.server.log_level)
     bitrix_client = BitrixClient(settings.bitrix)
     resource_registry = ResourceRegistry(bitrix_client)
-    tool_registry = ToolRegistry(bitrix_client)
+    date_builder = DateRangeBuilder(resolve_timezone(settings.server.timezone))
+    tool_registry = ToolRegistry(bitrix_client, resource_registry, date_builder)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

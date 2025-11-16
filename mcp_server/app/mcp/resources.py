@@ -16,6 +16,12 @@ ResourceHandler = Callable[[BitrixClient, Dict[str, Any], Optional[str]], Awaita
 _DEFAULT_LOCALE = "ru"
 _CACHE_TTL_SECONDS = 300
 
+_SEMANTIC_GROUP_LABELS: Dict[str, str] = {
+    "process": "В работе",
+    "success": "Заключена",
+    "failure": "Провалена",
+}
+
 _RESOURCE_DEFAULTS: Dict[str, Dict[str, str]] = {
     "crm/deals": {
         "name": "CRM Deals",
@@ -65,6 +71,10 @@ _RESOURCE_DEFAULTS: Dict[str, Dict[str, str]] = {
         "name": "Шпаргалка по лидам",
         "description": "Готовые payload'ы для crm.lead.list.",
     },
+    "crm/currencies": {
+        "name": "CRM Currencies",
+        "description": "Справочник валют (crm.currency.list).",
+    },
 }
 
 
@@ -96,12 +106,23 @@ async def _list_entities(
 
     data = response.get("result") or []
     next_cursor = response.get("next")
+    total_value = response.get("total")
+    if isinstance(total_value, str):
+        try:
+            total = int(total_value)
+        except ValueError:
+            total = None
+    elif isinstance(total_value, int):
+        total = total_value
+    else:
+        total = None
     metadata = _metadata(resource, client.settings)
 
     return ResourceQueryResponse(
         metadata=metadata,
         data=data,
         next_cursor=str(next_cursor) if next_cursor is not None else None,
+        total=total,
     )
 
 
@@ -194,6 +215,24 @@ def _build_user_summary(user_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_semantics(entry: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    semantics = entry.get("SEMANTICS") or entry.get("STATUS")
+    if semantics:
+        return str(semantics)
+    extra = entry.get("EXTRA")
+    if isinstance(extra, dict):
+        return extra.get("SEMANTICS")
+    return None
+
+
+def _semantic_group_label(semantics: Optional[str]) -> Optional[str]:
+    if not semantics:
+        return None
+    return _SEMANTIC_GROUP_LABELS.get(semantics.lower(), semantics)
+
+
 def _build_enum_summary(entry_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": entry_id,
@@ -216,6 +255,7 @@ class ResourceRegistry:
             "crm/lead_statuses": self._lead_statuses_handler,
             "crm/lead_sources": self._lead_sources_handler,
             "crm/leads": self._leads_handler,
+            "crm/currencies": self._currencies_handler,
             "crm/deal_categories": self._deal_categories_handler,
             "crm/deal_stages": self._deal_stages_handler,
             "crm/contacts": self._contacts_handler,
@@ -361,7 +401,12 @@ class ResourceRegistry:
 
         enriched: List[Dict[str, Any]] = [copy.deepcopy(item) for item in items]
 
-        user_ids = {_safe_str(item.get("ASSIGNED_BY_ID")) for item in items if item.get("ASSIGNED_BY_ID") is not None}
+        user_ids: Set[str] = set()
+        for item in items:
+            for key in ("ASSIGNED_BY_ID", "CREATED_BY_ID", "MODIFY_BY_ID"):
+                value = _safe_str(item.get(key))
+                if value:
+                    user_ids.add(value)
         users = await self._load_users(client, user_ids)
 
         status_response = await self._status_dictionary_handler(
@@ -382,11 +427,22 @@ class ResourceRegistry:
         )
         source_map = _index_by_keys(source_response.data, ("ID", "SOURCE_ID", "STATUS_ID"))
 
+        currency_response = await self._currencies_handler(client, params={}, cursor=None)
+        currency_map = _index_by_keys(currency_response.data, ("CURRENCY", "ID", "CODE"))
+
         for item in enriched:
             meta = _ensure_meta(item)
             assigned_key = _safe_str(item.get("ASSIGNED_BY_ID"))
             if assigned_key and assigned_key in users:
                 meta["responsible"] = _build_user_summary(assigned_key, users[assigned_key])
+
+            creator_key = _safe_str(item.get("CREATED_BY_ID"))
+            if creator_key and creator_key in users:
+                meta["creator"] = _build_user_summary(creator_key, users[creator_key])
+
+            modifier_key = _safe_str(item.get("MODIFY_BY_ID"))
+            if modifier_key and modifier_key in users:
+                meta["modifier"] = _build_user_summary(modifier_key, users[modifier_key])
 
             status_key = _safe_str(item.get("STATUS_ID"))
             if status_key and status_key in status_map:
@@ -395,6 +451,10 @@ class ResourceRegistry:
             source_key = _safe_str(item.get("SOURCE_ID"))
             if source_key and source_key in source_map:
                 meta["source"] = _build_enum_summary(source_key, source_map[source_key])
+
+            currency_key = _safe_str(item.get("CURRENCY_ID")) or _safe_str(item.get("CURRENCY"))
+            if currency_key and currency_key in currency_map:
+                meta["currency"] = _build_enum_summary(currency_key, currency_map[currency_key])
 
         return enriched
 
@@ -500,6 +560,13 @@ class ResourceRegistry:
 
         return enriched
 
+    def _apply_semantic_groups(self, items: List[Dict[str, Any]]) -> None:
+        for entry in items:
+            semantics = _extract_semantics(entry)
+            if semantics:
+                entry["group"] = semantics
+                entry["groupName"] = _semantic_group_label(semantics)
+
     async def _status_dictionary_handler(
         self,
         client: BitrixClient,
@@ -515,13 +582,15 @@ class ResourceRegistry:
         payload["filter"] = filters
 
         async def fetch() -> ResourceQueryResponse:
-            return await _list_entities(
+            response = await _list_entities(
                 client,
                 resource=resource,
                 method="crm.status.list",
                 params=payload,
                 cursor=None,
             )
+            self._apply_semantic_groups(response.data)
+            return response
 
         return await self._cacheable_query(
             resource=resource,
@@ -550,6 +619,27 @@ class ResourceRegistry:
             cursor,
             resource="crm/lead_sources",
             entity_id="SOURCE",
+        )
+
+    async def _currencies_handler(
+        self, client: BitrixClient, params: Dict[str, Any], cursor: Optional[str]
+    ) -> ResourceQueryResponse:
+        payload = copy.deepcopy(params) if params else {}
+
+        async def fetch() -> ResourceQueryResponse:
+            return await _list_entities(
+                client,
+                resource="crm/currencies",
+                method="crm.currency.list",
+                params=payload,
+                cursor=None,
+            )
+
+        return await self._cacheable_query(
+            resource="crm/currencies",
+            params=payload,
+            cursor=cursor,
+            fetcher=fetch,
         )
 
     async def _deal_categories_handler(
@@ -582,13 +672,15 @@ class ResourceRegistry:
         payload.setdefault("id", 0)
 
         async def fetch() -> ResourceQueryResponse:
-            return await _list_entities(
+            response = await _list_entities(
                 client,
                 resource="crm/deal_stages",
                 method="crm.dealcategory.stage.list",
                 params=payload,
                 cursor=None,
             )
+            self._apply_semantic_groups(response.data)
+            return response
 
         return await self._cacheable_query(
             resource="crm/deal_stages",

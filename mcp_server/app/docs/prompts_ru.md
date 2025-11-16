@@ -20,6 +20,16 @@
         "limit": 50
       },
       {
+        "title": "Лиды за последнюю неделю",
+        "description": "Для анализа за неделю фильтруйте по `>=DATE_CREATE` и `<=DATE_CREATE`, сортируйте `DATE_MODIFY: DESC` и запрашивайте больше записей.",
+        "order": {"DATE_MODIFY": "DESC"},
+        "filter": {
+          ">=DATE_CREATE": "2025-11-08T00:00:00Z",
+          "<=DATE_CREATE": "2025-11-15T23:59:59Z"
+        },
+        "limit": 200
+      },
+      {
         "title": "Лиды назначенные мне",
         "description": "Используйте фильтр `=ASSIGNED_BY_ID` с идентификатором ответственного и при необходимости ограничьте статусом.",
         "order": {"DATE_CREATE": "DESC"},
@@ -59,7 +69,7 @@
         "suggested_filters": {
           ">=DATE_CREATE": "{today_start}",
           "<=DATE_CREATE": "{today_end}"
-        }
+          }
       }
     ],
     "getDeals": [
@@ -470,6 +480,18 @@
               "@ASSIGNED_BY_ID": ["123", "456"],
               ">=DATE_MODIFY": "2024-05-25",
               "<=DATE_MODIFY": "2024-05-31"
+            },
+            "limit": 200
+          }
+        },
+        {
+          "title": "Лиды за последнюю неделю",
+          "description": "Запросите лиды, созданные за последние 7 дней, с сортировкой по `DATE_MODIFY`.",
+          "payload": {
+            "order": {"DATE_MODIFY": "DESC"},
+            "filter": {
+              ">=DATE_CREATE": "2025-11-08T00:00:00Z",
+              "<=DATE_CREATE": "2025-11-15T23:59:59Z"
             },
             "limit": 200
           }

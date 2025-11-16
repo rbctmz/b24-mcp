@@ -31,10 +31,22 @@ class ServerSettings(BaseSettings):
     log_level: Literal["critical", "error", "warning", "info", "debug", "trace"] = Field(
         "info", description="Logging level for the ASGI server"
     )
+    timezone: str = Field(
+        "UTC",
+        description="IANA timezone used to format date ranges and hints in structured responses",
+    )
+
+
+def _default_bitrix_settings() -> BitrixSettings:
+    return BitrixSettings.model_validate({})
+
+
+def _default_server_settings() -> ServerSettings:
+    return ServerSettings.model_validate({})
 
 
 class AppSettings(BaseModel):
     """Aggregate configuration for the MCP server."""
 
-    bitrix: BitrixSettings = Field(default_factory=BitrixSettings)
-    server: ServerSettings = Field(default_factory=ServerSettings)
+    bitrix: BitrixSettings = Field(default_factory=_default_bitrix_settings)
+    server: ServerSettings = Field(default_factory=_default_server_settings)

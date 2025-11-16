@@ -23,10 +23,25 @@ class StubBitrixClient:
         self.settings = settings
         self.responses: Dict[str, Any] = {}
         self.calls: List[Tuple[str, Dict[str, Any]]] = []
+        self._default_responses = {
+            "crm.status.list": lambda payload: {"result": []},
+            "crm.lead.list": lambda payload: {"result": []},
+            "crm.currency.list": lambda payload: {"result": []},
+            "user.get": lambda payload: {
+                "result": {
+                    "ID": payload.get("ID"),
+                    "NAME": "User",
+                    "LAST_NAME": "Potato",
+                }
+            },
+        }
 
     async def call_method(self, method: str, payload: Dict[str, Any] | None = None) -> Dict[str, Any]:
         self.calls.append((method, payload or {}))
         if method not in self.responses:
+            default = self._default_responses.get(method)
+            if callable(default):
+                return default(payload or {})
             raise AssertionError(f"Unexpected Bitrix method '{method}' invoked without stub")
         response = self.responses[method]
         if callable(response):

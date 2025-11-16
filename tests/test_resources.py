@@ -30,8 +30,8 @@ def test_resource_query_deals(app, client: TestClient) -> None:
 def test_resource_lead_statuses(app, client: TestClient) -> None:
     app.state.bitrix_client.responses["crm.status.list"] = {
         "result": [
-            {"STATUS_ID": "NEW", "NAME": "Новый"},
-            {"STATUS_ID": "CONVERTED", "NAME": "Сконвертирован"},
+            {"STATUS_ID": "NEW", "NAME": "Новый", "SEMANTICS": "process"},
+            {"STATUS_ID": "CONVERTED", "NAME": "Сконвертирован", "SEMANTICS": "success"},
         ],
     }
 
@@ -44,6 +44,8 @@ def test_resource_lead_statuses(app, client: TestClient) -> None:
     body = response.json()
     assert body["metadata"]["resource"] == "crm/lead_statuses"
     assert body["data"][0]["STATUS_ID"] == "NEW"
+    assert body["data"][0]["group"] == "process"
+    assert body["data"][0]["groupName"] == "В работе"
     assert app.state.bitrix_client.calls[0] == ("crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}})
 
     response = client.post(
@@ -181,7 +183,7 @@ def test_resource_deal_categories_caching(app, client: TestClient) -> None:
 def test_resource_deal_stages_default_category(app, client: TestClient) -> None:
     app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {
         "result": [
-            {"ID": "NEW", "NAME": "Новая", "CATEGORY_ID": 0},
+            {"ID": "NEW", "NAME": "Новая", "CATEGORY_ID": 0, "SEMANTICS": "process"},
         ]
     }
 
@@ -200,7 +202,7 @@ def test_resource_deal_stages_default_category(app, client: TestClient) -> None:
 def test_resource_deal_stages_with_category_alias(app, client: TestClient) -> None:
     app.state.bitrix_client.responses["crm.dealcategory.stage.list"] = {
         "result": [
-            {"ID": "WON", "NAME": "Успешно", "CATEGORY_ID": 3},
+            {"ID": "WON", "NAME": "Успешно", "CATEGORY_ID": 3, "SEMANTICS": "success"},
         ]
     }
 
@@ -355,8 +357,11 @@ def test_leads_enriched_meta(app, client: TestClient) -> None:
             {
                 "ID": "11",
                 "ASSIGNED_BY_ID": 101,
+                "CREATED_BY_ID": 202,
+                "MODIFY_BY_ID": 303,
                 "STATUS_ID": "NEW",
                 "SOURCE_ID": "CALL",
+                "CURRENCY_ID": "USD",
             }
         ]
     }
@@ -370,13 +375,29 @@ def test_leads_enriched_meta(app, client: TestClient) -> None:
         raise AssertionError(f"Unexpected ENTITY_ID {entity_id}")
 
     app.state.bitrix_client.responses["crm.status.list"] = status_list
-    app.state.bitrix_client.responses["user.get"] = lambda payload: {
-        "result": {
-            "ID": payload.get("ID"),
-            "NAME": "Alice",
-            "LAST_NAME": "Smith",
-        }
+    app.state.bitrix_client.responses["crm.currency.list"] = {
+        "result": [
+            {"CURRENCY": "USD", "NAME": "US Dollar"},
+        ]
     }
+
+    def user_info(payload: Dict[str, Any]) -> Dict[str, Any]:
+        user_id = payload.get("ID")
+        names = {
+            101: ("Alice", "Smith"),
+            202: ("Bob", "Builder"),
+            303: ("Carol", "Jones"),
+        }
+        first, last = names.get(user_id, ("User", str(user_id)))
+        return {
+            "result": {
+                "ID": user_id,
+                "NAME": first,
+                "LAST_NAME": last,
+            }
+        }
+
+    app.state.bitrix_client.responses["user.get"] = user_info
 
     response = client.post(
         "/mcp/resource/query",
@@ -387,8 +408,11 @@ def test_leads_enriched_meta(app, client: TestClient) -> None:
     body = response.json()
     meta = body["data"][0]["_meta"]
     assert meta["responsible"]["name"] == "Alice Smith"
+    assert meta["creator"]["name"] == "Bob Builder"
+    assert meta["modifier"]["name"] == "Carol Jones"
     assert meta["status"]["name"] == "Новый"
     assert meta["source"]["name"] == "Звонок"
+    assert meta["currency"]["name"] == "US Dollar"
 
 
 def test_deals_enriched_meta(app, client: TestClient) -> None:

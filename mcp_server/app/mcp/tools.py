@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
-import logging
 import copy
-from datetime import datetime, timezone, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from ..bitrix_client import BitrixAPIError, BitrixClient
 from ..exceptions import ToolNotFoundError, UpstreamError
-from ..settings import BitrixSettings
-from .schemas import MCPMetadata, ToolCallRequest, ToolCallResponse, ToolDescriptor
 from ..prompt_loader import get_tool_docs, get_tool_warning_rules
+from ..settings import BitrixSettings
+from .date_ranges import DateRangeBuilder, DateRangeError
+from .resources import _safe_str, ResourceRegistry
+from .schemas import MCPMetadata, ResourceQueryRequest, ToolCallRequest, ToolCallResponse, ToolDescriptor
 
 ToolHandler = Callable[[BitrixClient, Dict[str, Any]], Awaitable[ToolCallResponse]]
 
@@ -31,6 +33,19 @@ def _metadata(tool: str, settings: BitrixSettings, resource: Optional[str] = Non
     return MCPMetadata(provider="bitrix24", tool=tool, resource=resource, instance_name=settings.instance_name)
 
 
+def _normalize_semantics(semantics: Union[str, List[str], None]) -> Optional[str]:
+    if semantics is None:
+        return None
+    if isinstance(semantics, (list, tuple, set)):
+        for item in semantics:
+            if item:
+                semantics = item
+                break
+        else:
+            return None
+    return str(semantics).upper()
+
+
 async def _call_bitrix(
     client: BitrixClient,
     *,
@@ -38,22 +53,52 @@ async def _call_bitrix(
     method: str,
     payload: Dict[str, Any],
     resource: Optional[str] = None,
-    warnings: Optional[List[str]] = None,
+    warnings: Optional[List[Dict[str, Any]]] = None,
+    aggregates: Optional[Dict[str, Any]] = None,
+    hints: Optional[Dict[str, Any]] = None,
 ) -> ToolCallResponse:
-    metadata = _metadata(tool, client.settings, resource=resource)
-    is_error = bool(warnings)
     try:
         response = await client.call_method(method, payload)
-    except BitrixAPIError as exc:  # pragma: no cover - simple passthrough
+    except BitrixAPIError as exc:
         raise UpstreamError(message=str(exc), payload=exc.payload, status_code=502) from exc
 
-    structured_payload: Dict[str, Any] = {
+    return _build_tool_response(
+        tool=tool,
+        resource=resource,
+        settings=client.settings,
+        payload=payload,
+        response=response,
+        warnings=warnings,
+        aggregates=aggregates,
+        hints=hints,
+    )
+
+
+def _build_tool_response(
+    *,
+    tool: str,
+    resource: Optional[str],
+    settings: BitrixSettings,
+    payload: Dict[str, Any],
+    response: Dict[str, Any],
+    warnings: Optional[List[Dict[str, Any]]] = None,
+    aggregates: Optional[Dict[str, Any]] = None,
+    hints: Optional[Dict[str, Any]] = None,
+) -> ToolCallResponse:
+    metadata = _metadata(tool, settings, resource=resource)
+    structured_payload = {
         "metadata": metadata.model_dump(exclude_none=True),
         "request": payload,
         "result": response,
     }
-    content_messages: List[Dict[str, str]] = []
-
+    if aggregates:
+        structured_payload["aggregates"] = aggregates
+    if hints:
+        structured_payload["hints"] = hints
+    pagination = _extract_pagination(response)
+    if pagination:
+        structured_payload["pagination"] = pagination
+    content_messages = []
     if warnings:
         structured_payload["warnings"] = warnings
         suggested_filters = []
@@ -67,43 +112,76 @@ async def _call_bitrix(
         if suggested_filters:
             structured_payload["suggestedFix"] = {"filters": suggested_filters}
 
-    items_count: Optional[int] = None
-    if isinstance(response, dict):
-        payload_items = response.get("result")
-        if isinstance(payload_items, list):
-            items_count = len(payload_items)
-
     resource_name = metadata.resource or metadata.tool or "Bitrix24"
+    items_count = _count_result_items(response)
+    total_items = _extract_total(response)
     if items_count is not None:
-        summary_text = (
-            f"{resource_name}: получено {items_count} записей. Полный ответ в structuredContent.result."
-        )
+        if total_items is not None:
+            summary_text = f"{resource_name}: получено {items_count} из {total_items} записей. Полный ответ в structuredContent.result."
+        else:
+            summary_text = f"{resource_name}: получено {items_count} записей. Полный ответ в structuredContent.result."
     else:
         summary_text = f"{resource_name}: ответ получен. Полный результат в structuredContent.result."
     content_messages.append({"type": "text", "text": summary_text})
 
-    response_kwargs: Dict[str, Any] = {
-        "metadata": metadata,
-        "result": response,
-        "structuredContent": structured_payload,
-        "content": content_messages,
-        "is_error": is_error,
-    }
-    if warnings:
-        response_kwargs["warnings"] = warnings
+    return ToolCallResponse(
+        metadata=metadata,
+        result=response,
+        structuredContent=structured_payload,
+        content=content_messages,
+        warnings=warnings,
+        is_error=bool(warnings),
+    )
 
-    return ToolCallResponse(**response_kwargs)
+
+def _extract_pagination(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    total = _extract_total(payload)
+    next_cursor = payload.get("next")
+    limit = payload.get("limit")
+    fetched = None
+    if isinstance(payload.get("result"), list):
+        fetched = len(payload["result"])
+    pagination: Dict[str, Any] = {}
+    if limit is not None:
+        pagination["limit"] = limit
+    if payload.get("start") is not None:
+        pagination["start"] = payload["start"]
+    if next_cursor is not None:
+        pagination["next"] = str(next_cursor)
+    if total is not None:
+        pagination["total"] = total
+    if fetched is not None:
+        pagination["fetched"] = fetched
+    return pagination or None
+
+
+def _count_result_items(payload: Dict[str, Any]) -> Optional[int]:
+    if isinstance(payload.get("result"), list):
+        return len(payload["result"])
+    return None
+
+
+def _extract_total(payload: Dict[str, Any]) -> Optional[int]:
+    if "total" in payload and isinstance(payload["total"], int):
+        return payload["total"]
+    if "total" in payload and isinstance(payload["total"], str):
+        try:
+            return int(payload["total"])
+        except ValueError:
+            return None
+    return None
 
 
 class ToolRegistry:
-    """Registers and resolves MCP tools."""
-
-    def __init__(self, client: BitrixClient) -> None:
+    def __init__(self, client: BitrixClient, resource_registry: ResourceRegistry, date_range_builder: DateRangeBuilder):
         self._client = client
+        self._resource_registry = resource_registry
+        self._range_builder = date_range_builder
         self._locale = _DEFAULT_LOCALE
         self._tool_docs = get_tool_docs(self._locale)
         self._warning_rules = get_tool_warning_rules(self._locale)
-
         self._registry: Dict[str, ToolHandler] = {
             "getDeals": self._get_deals,
             "getLeads": self._get_leads,
@@ -111,14 +189,10 @@ class ToolRegistry:
             "getUsers": self._get_users,
             "getTasks": self._get_tasks,
         }
-
         self._descriptors: Dict[str, ToolDescriptor] = {}
         for tool_name, config in _TOOL_CONFIG.items():
             doc = self._tool_docs.get(tool_name, {})
-            description = doc.get(
-                "description",
-                _tool_description(entity=config["entity"], method=config["method"]),
-            )
+            description = doc.get("description", _tool_description(entity=config["entity"], method=config["method"]))
             input_schema = doc.get("inputSchema")
             if input_schema is None:
                 input_schema = _list_args_schema()
@@ -140,32 +214,23 @@ class ToolRegistry:
         return await handler(self._client, request.params)
 
     def _collect_warnings(self, tool_name: str, params: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
-        messages = self._evaluate_warnings(tool_name, params)
+        rules = self._warning_rules.get(tool_name, []) or []
+        messages: List[Dict[str, Any]] = []
+        for rule in rules:
+            message = rule.get("message")
+            if not message:
+                continue
+            check_type = rule.get("check")
+            if check_type == "require_date_range" and self._requires_date_range_warning(rule, params):
+                warning_data = {"message": self._format_warning_message(message)}
+                suggestion = self._build_date_range_suggestion(rule)
+                if suggestion:
+                    warning_data["suggested_filters"] = suggestion
+                messages.append(warning_data)
         if messages:
             logger.info("[%s] Issued warnings: %s", tool_name, messages)
             return messages
         return None
-
-    def _evaluate_warnings(self, tool_name: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        rules = self._warning_rules.get(tool_name, []) or []
-        messages: List[Dict[str, Any]] = []
-        for rule in rules:
-            check_type = rule.get("check")
-            message = rule.get("message")
-            if not message:
-                continue
-            if check_type == "require_date_range":
-                if self._requires_date_range_warning(rule, params):
-                    warning_data: Dict[str, Any] = {
-                        "message": self._format_warning_message(message),
-                    }
-                    suggestion = self._build_date_range_suggestion(rule)
-                    if suggestion:
-                        warning_data["suggested_filters"] = suggestion
-                    messages.append(warning_data)
-            else:
-                logger.debug("[%s] Unknown warning check type: %s", tool_name, check_type)
-        return messages
 
     @staticmethod
     def _requires_date_range_warning(rule: Dict[str, Any], params: Dict[str, Any]) -> bool:
@@ -181,8 +246,7 @@ class ToolRegistry:
     def _has_date_range(filter_map: Dict[str, Any], field: str) -> bool:
         lower_prefixes = (">=", ">")
         upper_prefixes = ("<=", "<")
-        lower = False
-        upper = False
+        lower = upper = False
         for key in filter_map.keys():
             if not isinstance(key, str):
                 continue
@@ -195,147 +259,168 @@ class ToolRegistry:
                 return True
         return False
 
-    @staticmethod
-    def _format_warning_message(template: str) -> str:
-        now = datetime.now(timezone.utc)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start.replace(hour=23, minute=59, second=59)
-        return template.format(
-            today_start=start.isoformat(),
-            today_end=end.isoformat(),
-            today_date=start.date().isoformat(),
-            today_start_no_tz=start.replace(tzinfo=None).isoformat(),
-            today_end_no_tz=end.replace(tzinfo=None).isoformat(),
-        )
+    def _format_warning_message(self, template: str) -> str:
+        placeholders = self._range_builder.placeholders("today", "iso")
+        placeholders.update(self._range_builder.week_placeholders())
+        return template.format(**placeholders)
 
-    @staticmethod
-    def _build_date_range_suggestion(rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _build_date_range_suggestion(self, rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         suggestion_type = rule.get("suggestion", "today")
-        field_name = rule.get("suggestion_field", "DATE_CREATE")
-        if not isinstance(field_name, str) or not field_name:
-            field_name = "DATE_CREATE"
         format_hint = rule.get("suggestion_format", "iso")
-        now = datetime.now(timezone.utc)
-        if suggestion_type == "today":
-            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end = start.replace(hour=23, minute=59, second=59)
-        elif suggestion_type == "yesterday":
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start = today_start - timedelta(days=1)
-            end = today_start - timedelta(seconds=1)
-        else:
+        semantic = rule.get("suggestion_semantics")
+        try:
+            window = self._range_builder.build_range(suggestion_type)
+        except DateRangeError:
             return None
-        if format_hint == "date":
-            default_start_value = start.date().isoformat()
-            default_end_value = end.date().isoformat()
-        elif format_hint == "datetime_no_tz":
-            default_start_value = start.replace(tzinfo=None).isoformat()
-            default_end_value = end.replace(tzinfo=None).isoformat()
-        else:
-            default_start_value = start.isoformat()
-            default_end_value = end.isoformat()
-
-        placeholders = {
-            "today_start": start.isoformat(),
-            "today_end": end.isoformat(),
-            "today_date": start.date().isoformat(),
-            "today_start_no_tz": start.replace(tzinfo=None).isoformat(),
-            "today_end_no_tz": end.replace(tzinfo=None).isoformat(),
-            "range_start": default_start_value,
-            "range_end": default_end_value,
-        }
-
+        start_value = self._range_builder.format_value(window.start, format_hint)
+        end_value = self._range_builder.format_value(window.end, format_hint)
+        placeholders = self._range_builder.placeholders(suggestion_type, format_hint)
+        placeholders.update(self._range_builder.week_placeholders())
         template_filters = rule.get("suggested_filters")
-        if isinstance(template_filters, dict) and template_filters:
-            formatted: Dict[str, Any] = {}
+        if isinstance(template_filters, dict):
+            formatted = {}
             for key, value in template_filters.items():
                 if isinstance(value, str):
-                    try:
-                        formatted[key] = value.format(**placeholders)
-                    except KeyError:
-                        formatted[key] = value
+                    formatted[key] = value.format(**placeholders)
                 else:
                     formatted[key] = value
             return formatted
-
-        return {
-            f">={field_name}": default_start_value,
-            f"<={field_name}": default_end_value,
+        filters = {
+            f">={rule.get('suggestion_field', 'DATE_CREATE')}": start_value,
+            f"<={rule.get('suggestion_field', 'DATE_CREATE')}": end_value,
         }
-
-    async def _get_deals(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
-        warnings = self._collect_warnings("getDeals", params)
-        config = _TOOL_CONFIG["getDeals"]
-        return await _call_bitrix(
-            client,
-            tool="getDeals",
-            resource=config["resource"],
-            method=config["method"],
-            payload=params,
-            warnings=warnings,
-        )
+        if semantic:
+            filters["=STATUS_SEMANTIC_ID"] = semantic
+        return filters
 
     async def _get_leads(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
         warnings = self._collect_warnings("getLeads", params)
         config = _TOOL_CONFIG["getLeads"]
         payload = dict(params)
-        logger.info(f"[getLeads] Input params: {params}")
-
-        # Разбор и валидация параметра limit до использования
-        requested_limit: Optional[int] = None
-        if "limit" in params:
-            raw_limit = params.get("limit")
-            if raw_limit is None:
-                logger.info("[getLeads] limit provided but is None; ignoring")
-            else:
-                try:
-                    requested_limit = int(raw_limit)
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"[getLeads] Invalid limit value: {raw_limit}, error: {e}")
-                    requested_limit = None
-
+        semantics_filter = payload.pop("statusSemantics", None) or payload.pop("groupSemantics", None)
+        if semantics_filter:
+            semantic_value = _normalize_semantics(semantics_filter)
+            if semantic_value:
+                filter_map = payload.setdefault("filter", {})
+                filter_map["=STATUS_SEMANTIC_ID"] = semantic_value
+                logger.info("[getLeads] Applied semantics filter %s", semantic_value)
+        requested_limit = None
+        if "limit" in payload and payload["limit"] is not None:
+            try:
+                requested_limit = int(payload["limit"])
+            except (TypeError, ValueError):
+                requested_limit = None
         if requested_limit is not None:
-            # enforce server-side cap
-            cap = 500
-            payload["limit"] = requested_limit if requested_limit <= cap else cap
-            logger.info(f"[getLeads] Setting limit in payload: {payload['limit']}")
-        else:
-            logger.info("[getLeads] No valid limit specified in params; not setting limit")
-
+            payload["limit"] = min(requested_limit, 500)
         raw_order = payload.get("order")
         if not raw_order:
             payload["order"] = {"DATE_MODIFY": "DESC"}
-            logger.info("[getLeads] Applying default order by DATE_MODIFY DESC for freshness")
-        else:
-            logger.info(f"[getLeads] Using custom order: {raw_order}")
+        resource_request = ResourceQueryRequest(resource=config["resource"], params=payload)
+        resource_response = await self._resource_registry.query(resource_request)
+        aggregates = self._build_lead_aggregates(resource_response.data)
+        hints = self._build_weekly_hint(payload)
+        result_payload = {"result": resource_response.data}
+        if resource_response.total is not None:
+            result_payload["total"] = resource_response.total
+        if resource_response.next_cursor is not None:
+            result_payload["next"] = resource_response.next_cursor
+        pagination_info = {
+            "limit": payload.get("limit"),
+            "start": payload.get("start"),
+            "next": resource_response.next_cursor,
+            "total": resource_response.total,
+            "fetched": len(resource_response.data),
+        }
+        result_payload = {"result": resource_response.data}
+        if resource_response.total is not None:
+            result_payload["total"] = resource_response.total
+        if resource_response.next_cursor is not None:
+            result_payload["next"] = resource_response.next_cursor
+        result_payload["limit"] = payload.get("limit")
+        result_payload["start"] = payload.get("start")
+        result_payload["order"] = payload.get("order")
 
-        logger.info(f"[getLeads] Final payload to Bitrix24: {payload}")
-
-        response = await _call_bitrix(
-            client,
+        response = _build_tool_response(
             tool="getLeads",
+            resource=config["resource"],
+            settings=client.settings,
+            payload=payload,
+            response=result_payload,
+            warnings=warnings,
+            aggregates=aggregates,
+            hints=hints,
+        )
+        response.structuredContent.setdefault("pagination", pagination_info)
+        return response
+
+    @staticmethod
+    def _build_lead_aggregates(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        responsible: Dict[str, Dict[str, Any]] = {}
+        status: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            assigned_key = _safe_str(item.get("ASSIGNED_BY_ID"))
+            if assigned_key:
+                entry = responsible.setdefault(assigned_key, {"count": 0})
+                entry["count"] += 1
+                name = item.get("_meta", {}).get("responsible", {}).get("name")
+                if name:
+                    entry["name"] = name
+            status_key = _safe_str(item.get("STATUS_ID"))
+            if status_key:
+                entry = status.setdefault(status_key, {"count": 0})
+                entry["count"] += 1
+                name = item.get("_meta", {}).get("status", {}).get("name")
+                if name:
+                    entry["name"] = name
+        aggregates: Dict[str, Any] = {}
+        if responsible:
+            aggregates["responsible"] = responsible
+        if status:
+            aggregates["status"] = status
+        return aggregates
+
+    def _build_weekly_hint(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        window = self._range_builder.build_range("last_week")
+        limit_value = 50
+        limit = payload.get("limit")
+        if isinstance(limit, int):
+            limit_value = limit
+        elif isinstance(limit, str):
+            try:
+                limit_value = int(limit)
+            except ValueError:
+                limit_value = 50
+        return {
+            "message": "Пример недельного фильтра для следующего запроса.",
+            "copyableFilter": {
+                "filter": {
+                    ">=DATE_CREATE": window.iso_start(),
+                    "<=DATE_CREATE": window.iso_end(),
+                },
+                "order": {"DATE_MODIFY": "DESC"},
+                "limit": limit_value,
+            },
+        }
+
+    async def _get_deals(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
+        warnings = self._collect_warnings("getDeals", params)
+        config = _TOOL_CONFIG["getDeals"]
+        payload = dict(params)
+        semantics_filter = payload.pop("stageSemantics", None)
+        if semantics_filter:
+            semantic_value = _normalize_semantics(semantics_filter)
+            if semantic_value:
+                filter_map = payload.setdefault("filter", {})
+                filter_map["=STATUS_SEMANTIC_ID"] = semantic_value
+                logger.info("[getDeals] Applied stage semantics filter %s", semantic_value)
+        return await _call_bitrix(
+            client,
+            tool="getDeals",
             resource=config["resource"],
             method=config["method"],
             payload=payload,
             warnings=warnings,
         )
-
-        # Проверяем результат
-        result = response.result
-        if isinstance(result, dict) and "result" in result:
-            leads_list = result["result"]
-            if isinstance(leads_list, list):
-                returned_count = len(leads_list)
-                logger.info(f"[getLeads] Bitrix24 returned {returned_count} leads")
-
-                # Обрезаем, если нужно
-                if requested_limit is not None and requested_limit > 0 and returned_count > requested_limit:
-                    logger.warning(f"[getLeads] Truncating from {returned_count} to {requested_limit}")
-                    result["result"] = leads_list[:requested_limit]
-                    # Обновляем счетчик
-                    result["total"] = min(result.get("total", returned_count), requested_limit)
-
-        return response
 
     async def _get_contacts(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
         warnings = self._collect_warnings("getContacts", params)
@@ -378,7 +463,8 @@ def _list_args_schema() -> Dict[str, Any]:
     return {
         "type": "object",
         "description": (
-            "Параметры методов списка Bitrix24. Используйте их, чтобы выбрать поля, настроить фильтры и пагинацию."
+            "Параметры методов списка Bitrix24. Используйте их, чтобы выбрать поля, "
+            "настроить фильтры и пагинацию."
         ),
         "additionalProperties": False,
         "properties": {
@@ -386,50 +472,24 @@ def _list_args_schema() -> Dict[str, Any]:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Коды полей, которые нужно вернуть вместо набора по умолчанию.",
-                "examples": [["ID", "TITLE", "DATE_CREATE"]],
             },
             "filter": {
                 "type": "object",
                 "additionalProperties": True,
-                "description": (
-                    "Фильтры Bitrix формата `<оператор><поле>` → значение. Операторы: `=` `>` `<` `>=` `<=` `@` (IN). "
-                    "Пример: `{\"=STATUS_ID\": \"NEW\", \">DATE_CREATE\": \"2024-01-01\"}`."
-                ),
-                "examples": [
-                    {"=STATUS_ID": "NEW"},
-                    {">DATE_CREATE": "2024-01-01"},
-                    {"@ASSIGNED_BY_ID": ["123", "456"]},
-                ],
+                "description": "Фильтры Bitrix формата `<оператор><поле>` → значение.",
             },
             "order": {
                 "type": "object",
                 "additionalProperties": True,
                 "description": "Сортировка: код поля → направление (`ASC` или `DESC`).",
-                "examples": [
-                    {"DATE_CREATE": "DESC"},
-                    {"ID": "ASC", "TITLE": "DESC"},
-                ],
             },
-            "start": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Смещение пагинации. Передавайте `next` из предыдущего ответа.",
-                "examples": [0, 50],
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "description": (
-                    "Максимальное число записей в ответе. Bitrix24 обычно ограничивает его 50."
-                ),
-                "examples": [5, 20, 50],
-            },
+            "start": {"type": "integer", "minimum": 0, "description": "Смещение пагинации."},
+            "limit": {"type": "integer", "minimum": 1, "description": "Максимум записей."},
         },
-        "required": [],
         "examples": [
             {
                 "select": ["ID", "TITLE", "DATE_CREATE"],
-                "filter": {"=CATEGORY_ID": "0", ">DATE_CREATE": "2024-01-01"},
+                "filter": {"=CATEGORY_ID": "0", ">=DATE_CREATE": "2024-01-01"},
                 "order": {"DATE_CREATE": "DESC"},
                 "limit": 20,
             }
@@ -438,10 +498,7 @@ def _list_args_schema() -> Dict[str, Any]:
 
 
 def _tool_description(*, entity: str, method: str) -> str:
-    """Provide a consistent description explaining filter/sort usage to MCP clients."""
-
     return (
-        f"Получает {entity} через Bitrix24 `{method}`. Поддерживает `select` (поля), "
-        "`filter` (операторы `=`, `>=`, `<=`, `@` и т.д.), `order` (карта `ASC`/`DESC`), "
-        "`start` (смещение) и `limit` (максимум записей, в пределах ограничений Bitrix24)."
+        f"Получает {entity} через Bitrix24 `{method}`. Поддерживает `select`, `filter`, `order`, "
+        "`start` и `limit`."
     )

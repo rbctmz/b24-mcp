@@ -7,13 +7,14 @@ import asyncio
 import json
 import os
 import sys
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import httpx
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 120.0  # seconds
 
 
 class ProxyConfig:
@@ -175,12 +176,26 @@ async def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         }
 
     async with httpx.AsyncClient(base_url=CONFIG.base_url, timeout=CONFIG.timeout) as client:
+        print(
+            f"[mcp_stdio_proxy] handling method={method} id={req_id}", file=sys.stderr
+        )
+        start_time = time.monotonic()
         try:
             result = await handler(client, req_id, params)
+            duration = time.monotonic() - start_time
+            print(
+                f"[mcp_stdio_proxy] method={method} id={req_id} succeeded in {duration:.3f}s",
+                file=sys.stderr,
+            )
             if is_notification:
                 return None
             return result
         except httpx.HTTPStatusError as exc:
+            duration = time.monotonic() - start_time
+            print(
+                f"[mcp_stdio_proxy] method={method} id={req_id} failed in {duration:.3f}s status={exc.response.status_code}",
+                file=sys.stderr,
+            )
             if is_notification:
                 return None
             return {
@@ -192,6 +207,11 @@ async def handle_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
             }
         except Exception as exc:  # noqa: BLE001 - bubble up details for debugging
+            duration = time.monotonic() - start_time
+            print(
+                f"[mcp_stdio_proxy] method={method} id={req_id} error in {duration:.3f}s exception={exc!r}",
+                file=sys.stderr,
+            )
             if is_notification:
                 return None
             return {

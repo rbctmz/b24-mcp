@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "b24-mcp": {
+      "type": "stdio",
+      "command": "/Users/gregkisel/Documents/GitHub/b24-mcp/.venv/bin/python",
+      "args": ["/Users/gregkisel/Documents/GitHub/b24-mcp/mcp_stdio_proxy.py"],
+      "cwd": "/Users/gregkisel/Documents/GitHub/b24-mcp",
+      "env": {
+        "MCP_PROXY_BASE_URL": "http://127.0.0.1:8000",
+        "MCP_PROXY_TIMEOUT": "120"
+      },
+      "autoStart": false
+    }
+  }
+}

@@ -45,6 +45,7 @@ class ResourceQueryResponse(BaseModel):
     metadata: MCPMetadata
     data: List[Dict[str, Any]]
     next_cursor: Optional[str] = None
+    total: Optional[int] = None
 
 
 class ToolCallRequest(BaseModel):
