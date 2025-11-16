@@ -40,6 +40,8 @@ LLM → MCP Server → Bitrix24 REST API
 -   getDeals
 -   getLeads
 -   getContacts
+-   getCompanies
+-   getCompany
 -   getUsers
 -   getTasks
 -   updateDeal

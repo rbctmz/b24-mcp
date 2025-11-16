@@ -60,6 +60,49 @@ def test_tool_get_contacts(app, client: TestClient) -> None:
     assert body["structuredContent"]["result"]["result"][0]["ID"] == "2"
 
 
+def test_tool_get_companies(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.company.list"] = {
+        "result": [{"ID": "9"}],
+        "total": 1,
+    }
+
+    response = client.post(
+        "/mcp/tool/call",
+        json={"tool": "getCompanies", "params": {"select": ["ID"]}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["isError"] is True
+    assert body["structuredContent"]["metadata"]["tool"] == "getCompanies"
+    assert body["structuredContent"]["metadata"]["resource"] == "crm/companies"
+    warnings = body["structuredContent"]["warnings"]
+    assert warnings[0]["message"].startswith("Добавьте фильтры диапазона")
+    assert set(warnings[0]["suggested_filters"].keys()) == {">=DATE_CREATE", "<=DATE_CREATE"}
+    assert warnings[0]["suggested_filters"] == body["structuredContent"]["suggestedFix"]["filters"][0]
+    assert any(item["text"].startswith("⚠️") for item in body["content"])
+    assert body["structuredContent"]["result"]["result"][0]["ID"] == "9"
+
+
+def test_tool_get_company(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.company.get"] = {
+        "result": {"ID": "9", "TITLE": "НКМ"},
+    }
+
+    response = client.post(
+        "/mcp/tool/call",
+        json={"tool": "getCompany", "params": {"id": "9", "select": ["ID", "TITLE"]}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["isError"] is False
+    assert body["structuredContent"]["metadata"]["tool"] == "getCompany"
+    assert body["structuredContent"]["metadata"]["resource"] == "crm/company"
+    assert body["structuredContent"]["result"]["result"]["ID"] == "9"
+    assert body["structuredContent"]["result"]["result"]["TITLE"] == "НКМ"
+
+
 def test_tool_get_tasks(app, client: TestClient) -> None:
     app.state.bitrix_client.responses["tasks.task.list"] = {
         "result": [{"id": 7}],
@@ -360,6 +403,66 @@ def test_leads_tool_semantics_filter(app, client: TestClient) -> None:
     assert lead_call is not None
     _, payload = lead_call
     assert payload["filter"]["=STATUS_SEMANTIC_ID"] == "PROCESS"
+
+
+
+def test_call_bitrix_method_forward_app_request(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.activity.list"] = {
+        "result": [{"ID": "C1", "TYPE_ID": 2}],
+        "total": 1,
+    }
+
+    response = client.post(
+        "/mcp/tool/call",
+        json={
+            "tool": "callBitrixMethod",
+            "params": {
+                "method": "crm.activity.list",
+                "params": {
+                    "filter": {
+                        "OWNER_TYPE_ID": 1,
+                        "OWNER_ID": "19721",
+                        "TYPE_ID": 2,
+                    },
+                    "select": ["ID", "TYPE_ID"],
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["structuredContent"]["result"]["result"][0]["ID"] == "C1"
+
+
+def test_get_lead_calls_sequence(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.activity.list"] = {
+        "result": [{"ID": "A1"}, {"ID": "A2"}],
+        "total": 2,
+    }
+    app.state.bitrix_client.responses["crm.activity.get"] = {
+        "result": {"ID": "A1", "CALL_ID": "call-1", "DURATION": 60},
+    }
+    app.state.bitrix_client.responses["voximplant.statistic.get"] = {
+        "result": {"CALL_ID": "call-1", "RECORDING_URL": "https://rec/1.mp3"}
+    }
+
+    response = client.post(
+        "/mcp/tool/call",
+        json={
+            "tool": "getLeadCalls",
+            "params": {
+                "ownerId": 19721,
+                "limit": 1,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    records = body["structuredContent"]["result"]["result"]
+    assert records[0]["activity"]["CALL_ID"] == "call-1"
+    assert records[0]["recording"]["CALL_ID"] == "call-1"
+    assert records[0]["recording"]["RECORDING_URL"] == "https://rec/1.mp3"
 
 @pytest.mark.parametrize(
     ("tool", "method"),

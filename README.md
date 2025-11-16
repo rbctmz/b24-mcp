@@ -5,7 +5,7 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 ## Features
 
 - MCP resources for listing deals, leads, contacts, users, tasks, currencies, and Bitrix24 dictionaries (lead stages/sources, deal categories/stages, task statuses/priorities)
-- MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks)
+- MCP tools for retrieving CRM entities (deals, leads, contacts, users, tasks) and companies (list/detail via `getCompanies`/`getCompany`)
 - Localized MCP prompts (Russian), including structuredContent and warnings for missing arguments
 - Tool responses conform to CallToolResult (fields `content`, `structuredContent`, `isError`) compatible with fastmcp
 - Uniform warnings and recommended date filters for all tools, allowing clients to automatically retry requests with adjustments
@@ -22,7 +22,7 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 
 - All prompt texts, tool descriptions, and ready-made payloads are stored in `mcp_server/app/docs/prompts_ru.md`. When the file is changed, the server automatically picks up new instructions without code modifications.
 - The `initialize` response contains `structuredInstructions` and `instructionNotes` with examples: how to get fresh leads (`order = {"DATE_MODIFY": "DESC"}`) and how to set date ranges via `>=DATE_CREATE`, `<=DATE_CREATE`.
-- MCP tools return `structuredContent` with the full Bitrix24 response and warnings. If no date range is provided, any tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`) adds a message, recommended filters, and `suggestedFix`, allowing fastmcp/SGR to automatically retry the request.
+- MCP tools return `structuredContent` with the full Bitrix24 response and warnings. If no date range is provided, any list tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`, `getCompanies`) adds a message, recommended filters, and `suggestedFix`, allowing fastmcp/SGR to automatically retry the request.
 - The `bitrix24_leads_guide` resource provides a cheat sheet with typical scenarios (fresh leads, today's selection, status filter) and rules for combining filters.
 - The `prompts_ru.md` structure provides for localization: for a new locale, it is enough to add a `prompts_<locale>.md` file and update the settings.
 
@@ -68,6 +68,8 @@ mmp@m copypaste? Wait patch wants to change line 105 from ` ``` ` to ` ```text `
 - For list tools the server additionally exposes `structuredContent.pagination` (`limit`, `start`, `next`, `total`, `fetched`), so you can immediately report the total count or use `next` to page through the full selection.
 - For dictionaries like `crm/lead_statuses` and `crm/deal_stages` we now include each stage’s `group`/`groupName` derived from its semantics (`process` → «В работе», `success` → «Заключена», `failure` → «Провалена»), so agents can filter or aggregate by status groups directly.
 - `getLeads` now supports `statusSemantics` (or alias `groupSemantics`) — a list of semantic groups (`process`, `success`, `failure`). The server resolves them into the corresponding `STATUS_ID` values before handing the filter to Bitrix, so you can request “лиды в работе” without managing the ID list yourself.
+- Added `callBitrixMethod` so you can proxy arbitrary REST calls (for example, `crm.activity.list` to fetch calls by `OWNER_TYPE_ID`/`TYPE_ID`). This keeps MCP flexible while reusing the same logging/warnings/pagination wrappers.
+- Added `getLeadCalls`, which combines `crm.activity.list` + `crm.activity.get` + `voximplant.statistic.get` to produce a detailed call log for a lead (`date`, `CALL_ID`, `duration`, and recording info).
 
 ## Resource Response Metadata (`_meta`)
 
@@ -231,7 +233,7 @@ Use the included `mcp_stdio_proxy.py` script to bridge Claude Desktop (stdio-bas
 |----------|--------|-------------|
 | `/mcp/index` | GET | Lists available resources and tools |
 | `/mcp/resource/query` | POST | Queries a resource (`crm/deals`, `crm/leads`, `crm/contacts`, `crm/users`, `crm/tasks`) |
-| `/mcp/tool/call` | POST | Executes a tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`) |
+| `/mcp/tool/call` | POST | Executes a tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`, `getCompanies`, `getCompany`) |
 
 ### Example resource query
 

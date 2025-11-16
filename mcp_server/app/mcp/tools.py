@@ -23,9 +23,13 @@ _DEFAULT_LOCALE = "ru"
 _TOOL_CONFIG: Dict[str, Dict[str, str]] = {
     "getDeals": {"entity": "сделки", "method": "crm.deal.list", "resource": "crm/deals"},
     "getLeads": {"entity": "лиды", "method": "crm.lead.list", "resource": "crm/leads"},
+    "callBitrixMethod": {"entity": "вызов REST-метода", "method": "call", "resource": "bitrix/method"},
+    "getLeadCalls": {"entity": "звонки лида", "method": "crm.activity.list", "resource": "bitrix/lead_calls"},
     "getContacts": {"entity": "контакты", "method": "crm.contact.list", "resource": "crm/contacts"},
     "getUsers": {"entity": "пользователи", "method": "user.get", "resource": "crm/users"},
     "getTasks": {"entity": "задачи", "method": "tasks.task.list", "resource": "crm/tasks"},
+    "getCompanies": {"entity": "компании", "method": "crm.company.list", "resource": "crm/companies"},
+    "getCompany": {"entity": "компания", "method": "crm.company.get", "resource": "crm/company"},
 }
 
 
@@ -86,7 +90,7 @@ def _build_tool_response(
     hints: Optional[Dict[str, Any]] = None,
 ) -> ToolCallResponse:
     metadata = _metadata(tool, settings, resource=resource)
-    structured_payload = {
+    structured_payload: Dict[str, Any] = {
         "metadata": metadata.model_dump(exclude_none=True),
         "request": payload,
         "result": response,
@@ -185,9 +189,13 @@ class ToolRegistry:
         self._registry: Dict[str, ToolHandler] = {
             "getDeals": self._get_deals,
             "getLeads": self._get_leads,
+            "callBitrixMethod": self._call_bitrix_method,
+            "getLeadCalls": self._get_lead_calls,
             "getContacts": self._get_contacts,
             "getUsers": self._get_users,
             "getTasks": self._get_tasks,
+            "getCompanies": self._get_companies,
+            "getCompany": self._get_company,
         }
         self._descriptors: Dict[str, ToolDescriptor] = {}
         for tool_name, config in _TOOL_CONFIG.items():
@@ -198,6 +206,12 @@ class ToolRegistry:
                 input_schema = _list_args_schema()
             else:
                 input_schema = copy.deepcopy(input_schema)
+            if tool_name == "callBitrixMethod":
+                input_schema = _call_bitrix_method_schema()
+            if tool_name == "getLeadCalls":
+                input_schema = _lead_calls_schema()
+            if tool_name == "getCompany":
+                input_schema = _company_get_schema()
             self._descriptors[tool_name] = ToolDescriptor(
                 name=tool_name,
                 description=description,
@@ -222,7 +236,7 @@ class ToolRegistry:
                 continue
             check_type = rule.get("check")
             if check_type == "require_date_range" and self._requires_date_range_warning(rule, params):
-                warning_data = {"message": self._format_warning_message(message)}
+                warning_data: Dict[str, Any] = {"message": self._format_warning_message(message)}
                 suggestion = self._build_date_range_suggestion(rule)
                 if suggestion:
                     warning_data["suggested_filters"] = suggestion
@@ -319,7 +333,12 @@ class ToolRegistry:
         resource_response = await self._resource_registry.query(resource_request)
         aggregates = self._build_lead_aggregates(resource_response.data)
         hints = self._build_weekly_hint(payload)
-        result_payload = {"result": resource_response.data}
+        result_payload: Dict[str, Any] = {
+            "result": resource_response.data,
+            "limit": payload.get("limit"),
+            "start": payload.get("start"),
+            "order": payload.get("order"),
+        }
         if resource_response.total is not None:
             result_payload["total"] = resource_response.total
         if resource_response.next_cursor is not None:
@@ -331,15 +350,6 @@ class ToolRegistry:
             "total": resource_response.total,
             "fetched": len(resource_response.data),
         }
-        result_payload = {"result": resource_response.data}
-        if resource_response.total is not None:
-            result_payload["total"] = resource_response.total
-        if resource_response.next_cursor is not None:
-            result_payload["next"] = resource_response.next_cursor
-        result_payload["limit"] = payload.get("limit")
-        result_payload["start"] = payload.get("start")
-        result_payload["order"] = payload.get("order")
-
         response = _build_tool_response(
             tool="getLeads",
             resource=config["resource"],
@@ -350,7 +360,8 @@ class ToolRegistry:
             aggregates=aggregates,
             hints=hints,
         )
-        response.structuredContent.setdefault("pagination", pagination_info)
+        if response.structuredContent is not None:
+            response.structuredContent.setdefault("pagination", pagination_info)
         return response
 
     @staticmethod
@@ -402,6 +413,74 @@ class ToolRegistry:
             },
         }
 
+    async def _call_bitrix_method(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
+        warnings = self._collect_warnings("callBitrixMethod", params)
+        config = _TOOL_CONFIG["callBitrixMethod"]
+        method = params.get("method")
+        if not isinstance(method, str):
+            raise ValueError("method is required")
+        method_params = params.get("params", {})
+        if not isinstance(method_params, dict):
+            raise ValueError("params must be an object")
+        response = await client.call_method(method, method_params)
+        return _build_tool_response(
+            tool="callBitrixMethod",
+            resource=config["resource"],
+            settings=client.settings,
+            payload=params,
+            response=response,
+            warnings=warnings,
+        )
+
+    async def _get_lead_calls(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
+        warnings = self._collect_warnings("getLeadCalls", params)
+        owner_id = params.get("ownerId") or params.get("leadId")
+        if not owner_id:
+            raise ValueError("ownerId (lead ID) is required")
+        filter_map = dict(params.get("filter") or {})
+        filter_map.update({"OWNER_TYPE_ID": 1, "OWNER_ID": owner_id, "TYPE_ID": 2})
+        list_params = {
+            "filter": filter_map,
+            "select": params.get("select") or ["ID", "CALL_ID", "START_TIME", "DURATION", "PHONE_FROM", "RESULT"],
+            "order": params.get("order") or {"START_TIME": "DESC"},
+            "limit": params.get("limit") or 10,
+        }
+        response = await client.call_method("crm.activity.list", list_params)
+        activities = response.get("result") or []
+        enriched: List[Dict[str, Any]] = []
+        for activity in activities:
+            act_id = activity.get("ID")
+            detail = None
+            recording = None
+            if act_id:
+                detail_resp = await client.call_method("crm.activity.get", {"ID": act_id})
+                detail = detail_resp.get("result")
+                call_id = detail.get("CALL_ID") if isinstance(detail, dict) else None
+                if call_id:
+                    record_resp = await client.call_method("voximplant.statistic.get", {"CALL_ID": call_id})
+                    recording = record_resp.get("result")
+            enriched.append(
+                {
+                    "timeline": activity,
+                    "activity": detail,
+                    "recording": recording,
+                }
+            )
+        payload = {"filter": filter_map, "order": list_params["order"], "limit": list_params["limit"]}
+        result_payload = {"result": enriched, "total": response.get("total")}
+        pagination = _extract_pagination(response)
+        response_tool = _build_tool_response(
+            tool="getLeadCalls",
+            resource=_TOOL_CONFIG["getLeadCalls"]["resource"],
+            settings=client.settings,
+            payload=payload,
+            response=result_payload,
+            warnings=warnings,
+        )
+        if pagination and response_tool.structuredContent is not None:
+            response_tool.structuredContent.setdefault("pagination", pagination)
+        return response_tool
+
     async def _get_deals(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
         warnings = self._collect_warnings("getDeals", params)
         config = _TOOL_CONFIG["getDeals"]
@@ -443,6 +522,37 @@ class ToolRegistry:
             resource=config["resource"],
             method=config["method"],
             payload=params,
+            warnings=warnings,
+        )
+
+    async def _get_companies(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
+        warnings = self._collect_warnings("getCompanies", params)
+        config = _TOOL_CONFIG["getCompanies"]
+        return await _call_bitrix(
+            client,
+            tool="getCompanies",
+            resource=config["resource"],
+            method=config["method"],
+            payload=params,
+            warnings=warnings,
+        )
+
+    async def _get_company(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
+        warnings = self._collect_warnings("getCompany", params)
+        config = _TOOL_CONFIG["getCompany"]
+        company_id = params.get("id") or params.get("ID")
+        if not company_id:
+            raise ValueError("id is required")
+        payload: Dict[str, Any] = {"ID": company_id}
+        if "select" in params:
+            payload["select"] = params["select"]
+        response = await client.call_method(config["method"], payload)
+        return _build_tool_response(
+            tool="getCompany",
+            resource=config["resource"],
+            settings=client.settings,
+            payload=payload,
+            response=response,
             warnings=warnings,
         )
 
@@ -494,6 +604,68 @@ def _list_args_schema() -> Dict[str, Any]:
                 "limit": 20,
             }
         ],
+    }
+
+
+def _call_bitrix_method_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "method": {"type": "string", "description": "Имя REST метода Bitrix"},
+            "params": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Параметры, передаваемые непосредственно в Bitrix REST.",
+            },
+        },
+        "required": ["method"],
+        "examples": [
+            {
+                "method": "crm.activity.list",
+                "params": {
+                    "filter": {
+                        "OWNER_TYPE_ID": 1,
+                        "OWNER_ID": 19721,
+                        "TYPE_ID": 2,
+                    },
+                    "select": ["ID", "SUBJECT", "START_TIME"],
+                    "order": {"START_TIME": "DESC"},
+                    "limit": 5,
+                },
+            }
+        ],
+    }
+
+
+def _lead_calls_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "ownerId": {"type": ["string", "integer"], "description": "ID лида"},
+            "limit": {"type": "integer", "minimum": 1, "default": 10},
+            "filter": {"type": "object", "additionalProperties": True},
+            "select": {"type": "array", "items": {"type": "string"}},
+            "order": {"type": "object", "additionalProperties": True},
+        },
+        "required": ["ownerId"],
+    }
+
+
+def _company_get_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "id": {"type": ["string", "integer"], "description": "ID компании"},
+            "select": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Список кодов полей, которые нужно вернуть",
+            },
+        },
+        "required": ["id"],
     }
 
 
