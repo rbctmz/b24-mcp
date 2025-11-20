@@ -218,7 +218,17 @@ def test_tool_call_jsonrpc(app, client: TestClient) -> None:
     }
     assert any(item["text"].startswith("⚠️") for item in result["content"])
     assert result["structuredContent"]["result"]["result"] == []
-    assert app.state.bitrix_client.calls == []
+    calls = app.state.bitrix_client.calls
+    summary_call = next(
+        (call for call in calls if call[0] == "crm.lead.list" and call[1].get("limit") == 1),
+        None,
+    )
+    assert summary_call is not None
+    method, payload = summary_call
+    assert method == "crm.lead.list"
+    assert payload["limit"] == 1
+    assert payload["order"] == {"DATE_MODIFY": "DESC"}
+    assert set(payload["filter"].keys()) == {">=DATE_CREATE", "<=DATE_CREATE"}
 
 
 def test_tool_call_jsonrpc_with_date_filter(app, client: TestClient) -> None:
@@ -280,7 +290,17 @@ def test_leads_tool_warns_without_date_filter(app, client: TestClient) -> None:
     }
     assert any(item["text"].startswith("⚠️") for item in body["content"])
     assert body["structuredContent"]["request"]["order"] == {"DATE_MODIFY": "DESC"}
-    assert app.state.bitrix_client.calls == []
+    calls = app.state.bitrix_client.calls
+    summary_call = next(
+        (call for call in calls if call[0] == "crm.lead.list" and call[1].get("limit") == 1),
+        None,
+    )
+    assert summary_call is not None
+    method, payload = summary_call
+    assert method == "crm.lead.list"
+    assert payload["limit"] == 1
+    assert payload["order"] == {"DATE_MODIFY": "DESC"}
+    assert set(payload["filter"].keys()) == {">=DATE_CREATE", "<=DATE_CREATE"}
 
 
 def test_leads_tool_no_warning_when_date_range_present(app, client: TestClient) -> None:

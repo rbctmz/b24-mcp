@@ -252,13 +252,29 @@ class ToolRegistry:
                 return rule
         return None
 
-    def _build_missing_date_range_response(
+    @staticmethod
+    def _extract_date_hint(params: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(params, dict):
+            return None
+        hint = params.get("dateHint")
+        if isinstance(hint, str) and hint:
+            return hint
+        meta = params.get("_meta")
+        if isinstance(meta, dict):
+            nested = meta.get("dateHint")
+            if isinstance(nested, str) and nested:
+                return nested
+        return None
+
+    async def _build_missing_date_range_response(
         self,
         client: BitrixClient,
         config: Dict[str, str],
         payload: Dict[str, Any],
         warnings: Optional[List[Dict[str, Any]]],
         rule: Optional[Dict[str, Any]],
+        suggested_filters: Optional[Dict[str, str]],
+        override_hint: Optional[str],
     ) -> ToolCallResponse:
         effective_warnings = list(warnings) if warnings else []
         if not effective_warnings:
@@ -268,18 +284,22 @@ class ToolRegistry:
                 else "Добавьте фильтры диапазона (>=DATE_CREATE / <=DATE_CREATE) для crm.lead.list."
             )
             fallback = {"message": fallback_message}
-            suggestion = self._build_date_range_suggestion(rule) if rule else None
-            if suggestion:
-                fallback["suggested_filters"] = suggestion
+            if suggested_filters:
+                fallback["suggested_filters"] = suggested_filters
             effective_warnings.append(fallback)
 
+        summary_total = await self._fetch_suggested_range_total(config, suggested_filters)
         result_payload: Dict[str, Any] = {
             "result": [],
             "limit": payload.get("limit"),
             "start": payload.get("start"),
             "order": payload.get("order"),
-            "total": 0,
         }
+        if summary_total is not None:
+            result_payload["total"] = summary_total
+        else:
+            result_payload["total"] = 0
+
         response = _build_tool_response(
             tool="getLeads",
             resource=config["resource"],
@@ -293,11 +313,37 @@ class ToolRegistry:
                 "limit": payload.get("limit"),
                 "start": payload.get("start"),
                 "next": None,
-                "total": 0,
+                "total": summary_total if summary_total is not None else 0,
                 "fetched": 0,
             }
             response.structuredContent.setdefault("pagination", pagination_info)
+
+        if summary_total is not None and response.content is not None:
+            range_label = override_hint or (rule.get("suggestion", "today") if isinstance(rule, dict) else "today")
+            placeholders = self._range_builder.placeholders(range_label, "iso")
+            range_desc = f"{placeholders.get('range_start')}…{placeholders.get('range_end')}"
+            human_label = {"today": "сегодня", "yesterday": "вчера"}.get(range_label, range_label)
+            clarification_text = (
+                f"Всего найдено {summary_total} лидов за {human_label} ({range_desc}). "
+                "Уточните критерии фильтрации (диапазон дат или dateHint), чтобы получить точные данные."
+            )
+            response.content.append({"type": "text", "text": clarification_text})
+
         return response
+
+    async def _fetch_suggested_range_total(
+        self, config: Dict[str, str], suggested_filters: Optional[Dict[str, str]]
+    ) -> Optional[int]:
+        if not suggested_filters:
+            return None
+        payload = {
+            "filter": dict(suggested_filters),
+            "limit": 1,
+            "order": {"DATE_MODIFY": "DESC"},
+        }
+        resource_request = ResourceQueryRequest(resource=config["resource"], params=payload)
+        summary = await self._resource_registry.query(resource_request)
+        return summary.total
 
     @staticmethod
     def _requires_date_range_warning(rule: Dict[str, Any], params: Dict[str, Any]) -> bool:
@@ -331,17 +377,18 @@ class ToolRegistry:
         placeholders.update(self._range_builder.week_placeholders())
         return template.format(**placeholders)
 
-    def _build_date_range_suggestion(self, rule: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _build_date_range_suggestion(self, rule: Dict[str, Any], override_hint: Optional[str] = None) -> Optional[Dict[str, Any]]:
         suggestion_type = rule.get("suggestion", "today")
         format_hint = rule.get("suggestion_format", "iso")
         semantic = rule.get("suggestion_semantics")
+        kind = override_hint or suggestion_type
         try:
-            window = self._range_builder.build_range(suggestion_type)
+            window = self._range_builder.build_range(kind)
         except DateRangeError:
             return None
         start_value = self._range_builder.format_value(window.start, format_hint)
         end_value = self._range_builder.format_value(window.end, format_hint)
-        placeholders = self._range_builder.placeholders(suggestion_type, format_hint)
+        placeholders = self._range_builder.placeholders(kind, format_hint)
         placeholders.update(self._range_builder.week_placeholders())
         template_filters = rule.get("suggested_filters")
         if isinstance(template_filters, dict):
@@ -382,10 +429,24 @@ class ToolRegistry:
         if not raw_order:
             payload["order"] = {"DATE_MODIFY": "DESC"}
         warnings = self._collect_warnings("getLeads", payload)
+        date_hint = self._extract_date_hint(payload)
         missing_date_rule = self._missing_date_range_rule("getLeads", payload)
+        suggestion_filters = (
+            self._build_date_range_suggestion(missing_date_rule, override_hint=date_hint)
+            if missing_date_rule
+            else None
+        )
         if missing_date_rule:
             logger.warning("[getLeads] Aborting call because required date range is missing")
-            return self._build_missing_date_range_response(client, config, payload, warnings, missing_date_rule)
+            return await self._build_missing_date_range_response(
+                client,
+                config,
+                payload,
+                warnings,
+                missing_date_rule,
+                suggestion_filters,
+                date_hint,
+            )
         resource_request = ResourceQueryRequest(resource=config["resource"], params=payload)
         resource_response = await self._resource_registry.query(resource_request)
         aggregates = self._build_lead_aggregates(resource_response.data)
