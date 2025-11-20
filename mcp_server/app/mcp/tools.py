@@ -246,6 +246,59 @@ class ToolRegistry:
             return messages
         return None
 
+    def _missing_date_range_rule(self, tool_name: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for rule in self._warning_rules.get(tool_name, []) or []:
+            if rule.get("check") == "require_date_range" and self._requires_date_range_warning(rule, params):
+                return rule
+        return None
+
+    def _build_missing_date_range_response(
+        self,
+        client: BitrixClient,
+        config: Dict[str, str],
+        payload: Dict[str, Any],
+        warnings: Optional[List[Dict[str, Any]]],
+        rule: Optional[Dict[str, Any]],
+    ) -> ToolCallResponse:
+        effective_warnings = list(warnings) if warnings else []
+        if not effective_warnings:
+            fallback_message = (
+                rule.get("message")
+                if isinstance(rule, dict) and isinstance(rule.get("message"), str)
+                else "Добавьте фильтры диапазона (>=DATE_CREATE / <=DATE_CREATE) для crm.lead.list."
+            )
+            fallback = {"message": fallback_message}
+            suggestion = self._build_date_range_suggestion(rule) if rule else None
+            if suggestion:
+                fallback["suggested_filters"] = suggestion
+            effective_warnings.append(fallback)
+
+        result_payload: Dict[str, Any] = {
+            "result": [],
+            "limit": payload.get("limit"),
+            "start": payload.get("start"),
+            "order": payload.get("order"),
+            "total": 0,
+        }
+        response = _build_tool_response(
+            tool="getLeads",
+            resource=config["resource"],
+            settings=client.settings,
+            payload=payload,
+            response=result_payload,
+            warnings=effective_warnings,
+        )
+        if response.structuredContent is not None:
+            pagination_info = {
+                "limit": payload.get("limit"),
+                "start": payload.get("start"),
+                "next": None,
+                "total": 0,
+                "fetched": 0,
+            }
+            response.structuredContent.setdefault("pagination", pagination_info)
+        return response
+
     @staticmethod
     def _requires_date_range_warning(rule: Dict[str, Any], params: Dict[str, Any]) -> bool:
         filter_map = params.get("filter")
@@ -308,7 +361,6 @@ class ToolRegistry:
         return filters
 
     async def _get_leads(self, client: BitrixClient, params: Dict[str, Any]) -> ToolCallResponse:
-        warnings = self._collect_warnings("getLeads", params)
         config = _TOOL_CONFIG["getLeads"]
         payload = dict(params)
         semantics_filter = payload.pop("statusSemantics", None) or payload.pop("groupSemantics", None)
@@ -329,6 +381,11 @@ class ToolRegistry:
         raw_order = payload.get("order")
         if not raw_order:
             payload["order"] = {"DATE_MODIFY": "DESC"}
+        warnings = self._collect_warnings("getLeads", payload)
+        missing_date_rule = self._missing_date_range_rule("getLeads", payload)
+        if missing_date_rule:
+            logger.warning("[getLeads] Aborting call because required date range is missing")
+            return self._build_missing_date_range_response(client, config, payload, warnings, missing_date_rule)
         resource_request = ResourceQueryRequest(resource=config["resource"], params=payload)
         resource_response = await self._resource_registry.query(resource_request)
         aggregates = self._build_lead_aggregates(resource_response.data)
@@ -643,7 +700,7 @@ def _lead_calls_schema() -> Dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "ownerId": {"type": ["string", "integer"], "description": "ID лида"},
+            "ownerId": {"type": "integer", "description": "ID лида"},
             "limit": {"type": "integer", "minimum": 1, "default": 10},
             "filter": {"type": "object", "additionalProperties": True},
             "select": {"type": "array", "items": {"type": "string"}},
@@ -658,7 +715,7 @@ def _company_get_schema() -> Dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "id": {"type": ["string", "integer"], "description": "ID компании"},
+            "id": {"type": "integer", "description": "ID компании"},
             "select": {
                 "type": "array",
                 "items": {"type": "string"},

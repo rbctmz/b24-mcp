@@ -85,7 +85,11 @@ def _metadata(resource: str, settings: BitrixSettings) -> MCPMetadata:
 def _prepare_payload(params: Dict[str, Any], cursor: Optional[str]) -> Dict[str, Any]:
     payload = dict(params)
     if cursor is not None:
-        payload["start"] = int(cursor)
+        try:
+            payload["start"] = int(cursor)
+        except (TypeError, ValueError):
+            # Invalid cursor values are ignored so Bitrix API receives no start override.
+            pass
     return payload
 
 
@@ -250,7 +254,7 @@ class ResourceRegistry:
         self._resource_docs = get_resource_docs(self._locale)
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._user_cache: Dict[str, Optional[Dict[str, Any]]] = {}
-        self._registry: Dict[str, ResourceHandler] = {
+        handlers: Dict[str, ResourceHandler] = {
             "crm/deals": self._deals_handler,
             "crm/lead_statuses": self._lead_statuses_handler,
             "crm/lead_sources": self._lead_sources_handler,
@@ -265,8 +269,17 @@ class ResourceRegistry:
             "tasks/priorities": self._task_priorities_handler,
             "bitrix24_leads_guide": self._leads_guide_handler,
         }
+        self._handlers = handlers
+        self._registry: Dict[str, ResourceHandler] = dict(handlers)
+        self._alias_map: Dict[str, str] = {}
+        for uri in handlers.keys():
+            alias = self._alias_for(uri)
+            if not alias or alias in self._registry:
+                continue
+            self._registry[alias] = handlers[uri]
+            self._alias_map[alias] = uri
         self._descriptors: Dict[str, ResourceDescriptor] = {}
-        for uri in self._registry.keys():
+        for uri in handlers.keys():
             descriptor_data = self._resource_docs.get(uri, {})
             nested_descriptor = descriptor_data.get("descriptor")
             if isinstance(nested_descriptor, dict):
@@ -335,6 +348,13 @@ class ResourceRegistry:
         except TypeError:
             params_blob = repr(sorted(params.items()))
         return f"{resource}::{params_blob}"
+
+    @staticmethod
+    def _alias_for(uri: str) -> Optional[str]:
+        if "/" not in uri:
+            return None
+        alias = uri.rsplit("/", 1)[-1].strip()
+        return alias if alias else None
 
     async def _load_users(self, client: BitrixClient, user_ids: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
         normalized_ids: Set[str] = set()

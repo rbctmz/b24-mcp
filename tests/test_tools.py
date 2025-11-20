@@ -217,6 +217,42 @@ def test_tool_call_jsonrpc(app, client: TestClient) -> None:
         "<=DATE_CREATE",
     }
     assert any(item["text"].startswith("⚠️") for item in result["content"])
+    assert result["structuredContent"]["result"]["result"] == []
+    assert app.state.bitrix_client.calls == []
+
+
+def test_tool_call_jsonrpc_with_date_filter(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.lead.list"] = {
+        "result": [{"ID": "55", "TITLE": "Lead via JSONRPC"}],
+        "total": 1,
+    }
+
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "getLeads",
+                "arguments": {
+                    "select": ["ID", "TITLE"],
+                    "filter": {
+                        ">=DATE_CREATE": "2025-11-19T00:00:00Z",
+                        "<=DATE_CREATE": "2025-11-19T23:59:59Z",
+                    },
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 99
+    result = payload["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["metadata"]["tool"] == "getLeads"
     assert result["structuredContent"]["result"]["result"][0]["TITLE"] == "Lead via JSONRPC"
 
 
@@ -244,6 +280,7 @@ def test_leads_tool_warns_without_date_filter(app, client: TestClient) -> None:
     }
     assert any(item["text"].startswith("⚠️") for item in body["content"])
     assert body["structuredContent"]["request"]["order"] == {"DATE_MODIFY": "DESC"}
+    assert app.state.bitrix_client.calls == []
 
 
 def test_leads_tool_no_warning_when_date_range_present(app, client: TestClient) -> None:
@@ -281,7 +318,16 @@ def test_leads_tool_sets_default_order_and_caps_limit(app, client: TestClient) -
 
     response = client.post(
         "/mcp/tool/call",
-        json={"tool": "getLeads", "params": {"limit": 999}},
+        json={
+            "tool": "getLeads",
+            "params": {
+                "limit": 999,
+                "filter": {
+                    ">=DATE_CREATE": "2024-06-01",
+                    "<=DATE_CREATE": "2024-06-02",
+                },
+            },
+        },
     )
 
     assert response.status_code == 200
@@ -336,7 +382,16 @@ def test_leads_tool_includes_weekly_hint(app, client: TestClient) -> None:
 
     response = client.post(
         "/mcp/tool/call",
-        json={"tool": "getLeads", "params": {"select": ["ID", "ASSIGNED_BY_ID", "STATUS_ID", "DATE_CREATE", "DATE_MODIFY"]}},
+        json={
+            "tool": "getLeads",
+            "params": {
+                "select": ["ID", "ASSIGNED_BY_ID", "STATUS_ID", "DATE_CREATE", "DATE_MODIFY"],
+                "filter": {
+                    ">=DATE_CREATE": "2024-06-01",
+                    "<=DATE_CREATE": "2024-06-02",
+                },
+            },
+        },
     )
 
     assert response.status_code == 200
@@ -365,6 +420,10 @@ def test_leads_tool_preserves_custom_order(app, client: TestClient) -> None:
             "params": {
                 "order": {"DATE_CREATE": "ASC"},
                 "limit": 5,
+                "filter": {
+                    ">=DATE_CREATE": "2024-06-01",
+                    "<=DATE_CREATE": "2024-06-02",
+                },
             },
         },
     )
@@ -393,7 +452,10 @@ def test_leads_tool_semantics_filter(app, client: TestClient) -> None:
             "tool": "getLeads",
             "params": {
                 "statusSemantics": ["process"],
-                "filter": {">=DATE_CREATE": "2025-11-01"},
+                "filter": {
+                    ">=DATE_CREATE": "2025-11-01T00:00:00Z",
+                    "<=DATE_CREATE": "2025-11-01T23:59:59Z",
+                },
             },
         },
     )
@@ -555,11 +617,20 @@ def test_websocket_tools_call_returns_call_tool_result(app, client: TestClient) 
     with client.websocket_connect("/mcp") as websocket:
         websocket.send_json(
             {
-                "jsonrpc": "2.0",
-                "id": 10,
-                "method": "tools/call",
-                "params": {"name": "getLeads", "arguments": {"select": ["ID"]}},
-            }
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "getLeads",
+                "arguments": {
+                    "select": ["ID"],
+                    "filter": {
+                        ">=DATE_CREATE": "2024-06-01",
+                        "<=DATE_CREATE": "2024-06-02",
+                    },
+                },
+            },
+        }
         )
         message = websocket.receive_json()
 

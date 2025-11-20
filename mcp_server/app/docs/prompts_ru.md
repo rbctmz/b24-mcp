@@ -726,10 +726,7 @@
         "additionalProperties": false,
         "properties": {
           "ownerId": {
-            "type": [
-              "integer",
-              "string"
-            ]
+            "type": "integer"
           },
           "filter": {
             "type": "object",
