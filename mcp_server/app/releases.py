@@ -83,7 +83,7 @@ class GitHubReleaseSource:
         self._lock = asyncio.Lock()
 
     async def list_releases(self) -> List[ReleaseEntry]:
-        if not self._settings.repo:
+        if not self._settings.releases_repo:
             return await self._fallback.list_releases() if self._fallback else []
 
         now = time.monotonic()
@@ -105,7 +105,7 @@ class GitHubReleaseSource:
         return []
 
     async def _fetch_releases(self) -> List[ReleaseEntry]:
-        repo = self._settings.repo.strip("/") if self._settings.repo else ""
+        repo = self._settings.releases_repo.strip("/") if self._settings.releases_repo else ""
         if not repo:
             return []
 

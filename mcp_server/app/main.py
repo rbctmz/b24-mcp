@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
     _configure_logging(settings.server.log_level)
     bitrix_client = BitrixClient(settings.bitrix)
     static_release_source = StaticReleaseSource()
-    if settings.github.repo:
+    if settings.github.releases_repo:
         release_source = GitHubReleaseSource(settings.github, fallback=static_release_source)
     else:
         release_source = static_release_source

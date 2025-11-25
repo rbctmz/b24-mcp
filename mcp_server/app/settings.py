@@ -50,7 +50,7 @@ class GitHubSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="GITHUB_", extra="ignore")
 
-    repo: Optional[str] = Field(
+    releases_repo: Optional[str] = Field(
         None,
         description="GitHub repository for release history in the format 'owner/repo'.",
     )
