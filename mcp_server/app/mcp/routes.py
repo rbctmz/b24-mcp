@@ -388,7 +388,14 @@ async def resource_query(
     request: ResourceQueryRequest,
     resource_registry: ResourceRegistry = Depends(get_resource_registry),
 ) -> ResourceQueryResponse:
+    logger.debug("resource query %s", request.model_dump())
     resp = await resource_registry.query(request)
+    logger.debug(
+        "resource query result resource=%s items=%d next_cursor=%s",
+        resp.metadata.resource,
+        len(resp.data),
+        resp.next_cursor,
+    )
     # Broadcast results to SSE clients
     try:
         asyncio.create_task(
@@ -411,6 +418,8 @@ async def tool_call(
     tool_registry: ToolRegistry = Depends(get_tool_registry),
 ) -> Dict[str, Any]:
     """Execute a tool via MCP JSON-RPC 2.0 protocol."""
+
+    logger.debug("tool call request payload: %s", rpc_request)
     
     # Поддержка JSON-RPC 2.0 формата
     if "jsonrpc" in rpc_request:
@@ -436,10 +445,12 @@ async def tool_call(
                     "message": "Invalid params: tool name required"
                 }
             }
+        logger.debug("tool call details jsonrpc_id=%s method=%s tool=%s params=%s", request_id, method, tool_name, tool_params)
         
         tool_request = ToolCallRequest(tool=tool_name, params=tool_params)
         response = await tool_registry.call(tool_request)
         call_result = response.to_call_tool_result()
+        logger.debug("tool call %s finished warnings=%s pagination=%s", tool_name, bool(response.warnings), response.structuredContent.get("pagination") if isinstance(response.structuredContent, dict) else None)
         rpc_response = {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -455,6 +466,7 @@ async def tool_call(
         return rpc_response
     else:
         # Старый формат для обратной совместимости
+        logger.debug("tool call legacy format request: %s", rpc_request)
         tool_request = ToolCallRequest(**rpc_request)
         response = await tool_registry.call(tool_request)
         call_result = response.to_call_tool_result()

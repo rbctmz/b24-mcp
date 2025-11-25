@@ -14,6 +14,7 @@ from .mcp.routes import OAUTH_DISCOVERY_PAYLOAD, router as mcp_router
 from .mcp.resources import ResourceRegistry
 from .mcp.tools import ToolRegistry
 from .settings import AppSettings
+from .releases import GitHubReleaseSource, StaticReleaseSource
 
 
 LOG_NAMES_TO_SYNC = (
@@ -39,7 +40,12 @@ def create_app() -> FastAPI:
     settings = AppSettings()
     _configure_logging(settings.server.log_level)
     bitrix_client = BitrixClient(settings.bitrix)
-    resource_registry = ResourceRegistry(bitrix_client)
+    static_release_source = StaticReleaseSource()
+    if settings.github.repo:
+        release_source = GitHubReleaseSource(settings.github, fallback=static_release_source)
+    else:
+        release_source = static_release_source
+    resource_registry = ResourceRegistry(bitrix_client, release_source=release_source)
     date_builder = DateRangeBuilder(resolve_timezone(settings.server.timezone))
     tool_registry = ToolRegistry(bitrix_client, resource_registry, date_builder)
 

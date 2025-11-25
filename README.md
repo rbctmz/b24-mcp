@@ -17,6 +17,8 @@ FastAPI-based Model Context Protocol (MCP) server that exposes Bitrix24 CRM data
 - Async FastAPI application ready for Docker or local execution
 - Pytest suite with in-memory Bitrix24 client stubs
 - Claude Desktop stdio proxy (`mcp_stdio_proxy.py`) with configurable base URL/timeout via environment
+- `versions/releases` resource exposes structured release metadata (version, status, title, notes) derived from `CHANGELOG.md` so agents can fetch the latest release history through MCP.
+- Configure `GITHUB_RELEASES_REPO` (and optional `GITHUB_TOKEN`, `GITHUB_TIMEOUT_SECONDS`, `GITHUB_CACHE_TTL_SECONDS`) to keep `versions/releases` in sync with GitHub Releases instead of the static changelog snapshot.
 
 ## MCP Prompts and Cheat Sheets
 
@@ -70,6 +72,19 @@ mmp@m copypaste? Wait patch wants to change line 105 from ` ``` ` to ` ```text `
 - `getLeads` now supports `statusSemantics` (or alias `groupSemantics`) — a list of semantic groups (`process`, `success`, `failure`). The server resolves them into the corresponding `STATUS_ID` values before handing the filter to Bitrix, so you can request “лиды в работе” without managing the ID list yourself.
 - Added `callBitrixMethod` so you can proxy arbitrary REST calls (for example, `crm.activity.list` to fetch calls by `OWNER_TYPE_ID`/`TYPE_ID`). This keeps MCP flexible while reusing the same logging/warnings/pagination wrappers.
 - Added `getLeadCalls`, which combines `crm.activity.list` + `crm.activity.get` + `voximplant.statistic.get` to produce a detailed call log for a lead (`date`, `CALL_ID`, `duration`, and recording info).
+
+## Release History Resource
+
+Use the MCP resource `versions/releases` (alias `releases`) to get structured release notes directly from `CHANGELOG.md`. It returns a list of entries with `version`, `status`, `title`, and `notes`, so agents can inspect what changed without leaving the MCP context:
+
+```bash
+curl -sS http://localhost:8000/mcp/resource/query -H "Content-Type: application/json" \
+  -d '{"resource": "versions/releases", "params": {}}' | jq .
+```
+
+### GitHub release synchronization
+
+Set `GITHUB_RELEASES_REPO=owner/repo` to pull releases from GitHub instead of the built-in changelog. An optional `GITHUB_TOKEN` lets you read private repos or avoid rate limiting, `GITHUB_TIMEOUT_SECONDS` controls the fetch timeout, and `GITHUB_CACHE_TTL_SECONDS` determines how long results stay cached before another GitHub call. When GitHub is unreachable, the resource falls back to the static entries derived from `CHANGELOG.md`.
 
 ## Resource Response Metadata (`_meta`)
 
@@ -234,6 +249,12 @@ Use the included `mcp_stdio_proxy.py` script to bridge Claude Desktop (stdio-bas
 | `/mcp/index` | GET | Lists available resources and tools |
 | `/mcp/resource/query` | POST | Queries a resource (`crm/deals`, `crm/leads`, `crm/contacts`, `crm/users`, `crm/tasks`) |
 | `/mcp/tool/call` | POST | Executes a tool (`getDeals`, `getLeads`, `getContacts`, `getUsers`, `getTasks`, `getCompanies`, `getCompany`) |
+
+Resource queries for `crm/deals`, `crm/leads`, `crm/contacts`, and `crm/tasks` default to returning at most five records when no filters are provided so that an empty request does not stream the entire CRM list.
+
+### Debug logging
+
+- To inspect incoming MCP payloads and outgoing tool responses directly in the server logs, set `SERVER_LOG_LEVEL=debug` before starting the app (FastAPI reads this from `.env` or the environment). With `DEBUG` enabled you will see JSON-RPC requests, `tool`/`resource` parameters, and pagination metadata in the logs, which helps when tuning filters for Open WebUI or other agents.
 
 ### Example resource query
 

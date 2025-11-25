@@ -45,8 +45,38 @@ def _default_server_settings() -> ServerSettings:
     return ServerSettings.model_validate({})
 
 
+class GitHubSettings(BaseSettings):
+    """GitHub configuration used for populating release history."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="GITHUB_", extra="ignore")
+
+    repo: Optional[str] = Field(
+        None,
+        description="GitHub repository for release history in the format 'owner/repo'.",
+    )
+    token: Optional[str] = Field(
+        None,
+        description="Optional GitHub token (PAT) for authenticated release queries.",
+    )
+    timeout_seconds: float = Field(
+        10.0,
+        ge=1.0,
+        description="Timeout for GitHub API requests in seconds.",
+    )
+    cache_ttl_seconds: float = Field(
+        300.0,
+        ge=0.0,
+        description="Time-to-live for cached GitHub release data in seconds.",
+    )
+
+
+def _default_github_settings() -> GitHubSettings:
+    return GitHubSettings.model_validate({})
+
+
 class AppSettings(BaseModel):
     """Aggregate configuration for the MCP server."""
 
     bitrix: BitrixSettings = Field(default_factory=_default_bitrix_settings)
     server: ServerSettings = Field(default_factory=_default_server_settings)
+    github: GitHubSettings = Field(default_factory=_default_github_settings)

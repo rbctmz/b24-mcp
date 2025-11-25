@@ -873,6 +873,13 @@
         "Диапазон дат задавайте парой фильтров (`>=`, `<=`).",
         "Для пагинации используйте `start` из значения `next` предыдущего ответа."
       ]
+    },
+    "versions/releases": {
+      "descriptor": {
+        "uri": "versions/releases",
+        "name": "Release Versions",
+        "description": "История релизов MCP-сервера с полями version, status, title и notes."
+      }
     }
   }
 }

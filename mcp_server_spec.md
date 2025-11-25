@@ -34,6 +34,7 @@ LLM → MCP Server → Bitrix24 REST API
 -   crm/deal_stages — стадии по воронкам (crm.dealcategory.stage.list)
 -   tasks/statuses — справочник статусов задач (tasks.task.getFields → STATUS)
 -   tasks/priorities — справочник приоритетов задач (tasks.task.getFields → PRIORITY)
+-   При пустом фильтре запросы к `crm/deals`, `crm/leads`, `crm/contacts` и `crm/tasks` автоматически ограничивают результат пятью записями, чтобы агент не получал весь список без явного уточнения.
 
 ## 5. MCP Tools
 

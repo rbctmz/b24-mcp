@@ -10,6 +10,7 @@ from ..exceptions import ResourceNotFoundError, UpstreamError
 from ..settings import BitrixSettings
 from .schemas import MCPMetadata, ResourceDescriptor, ResourceQueryRequest, ResourceQueryResponse
 from ..prompt_loader import get_resource_docs
+from ..releases import ReleaseSource, StaticReleaseSource
 
 ResourceHandler = Callable[[BitrixClient, Dict[str, Any], Optional[str]], Awaitable[ResourceQueryResponse]]
 
@@ -75,8 +76,11 @@ _RESOURCE_DEFAULTS: Dict[str, Dict[str, str]] = {
         "name": "CRM Currencies",
         "description": "Справочник валют (crm.currency.list).",
     },
+    "versions/releases": {
+        "name": "Release Versions",
+        "description": "История релизов MCP-сервера.",
+    },
 }
-
 
 def _metadata(resource: str, settings: BitrixSettings) -> MCPMetadata:
     return MCPMetadata(provider="bitrix24", resource=resource, instance_name=settings.instance_name)
@@ -91,8 +95,6 @@ def _prepare_payload(params: Dict[str, Any], cursor: Optional[str]) -> Dict[str,
             # Invalid cursor values are ignored so Bitrix API receives no start override.
             pass
     return payload
-
-
 async def _list_entities(
     client: BitrixClient,
     *,
@@ -248,8 +250,9 @@ def _build_enum_summary(entry_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
 class ResourceRegistry:
     """Registers and resolves MCP resources."""
 
-    def __init__(self, client: BitrixClient) -> None:
+    def __init__(self, client: BitrixClient, release_source: ReleaseSource | None = None) -> None:
         self._client = client
+        self._release_source = release_source or StaticReleaseSource()
         self._locale = _DEFAULT_LOCALE
         self._resource_docs = get_resource_docs(self._locale)
         self._cache: Dict[str, Dict[str, Any]] = {}
@@ -268,6 +271,7 @@ class ResourceRegistry:
             "tasks/statuses": self._task_statuses_handler,
             "tasks/priorities": self._task_priorities_handler,
             "bitrix24_leads_guide": self._leads_guide_handler,
+            "versions/releases": self._release_versions_handler,
         }
         self._handlers = handlers
         self._registry: Dict[str, ResourceHandler] = dict(handlers)
@@ -851,3 +855,18 @@ class ResourceRegistry:
 
         metadata = _metadata("bitrix24_leads_guide", client.settings)
         return ResourceQueryResponse(metadata=metadata, data=scenarios, next_cursor=None)
+
+    async def _release_versions_handler(
+        self,
+        client: BitrixClient,
+        params: Dict[str, Any],
+        cursor: Optional[str],
+    ) -> ResourceQueryResponse:
+        metadata = _metadata("versions/releases", client.settings)
+        releases = await self._release_source.list_releases()
+        return ResourceQueryResponse(
+            metadata=metadata,
+            data=releases,
+            next_cursor=None,
+            total=len(releases),
+        )

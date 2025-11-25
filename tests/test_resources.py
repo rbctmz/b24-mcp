@@ -27,6 +27,45 @@ def test_resource_query_deals(app, client: TestClient) -> None:
     assert body["next_cursor"] is None
 
 
+def test_resource_query_unfiltered_limit_default(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.lead.list"] = {"result": []}
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/leads", "params": {"select": ["ID"]}},
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[0][0] == "crm.lead.list"
+    assert app.state.bitrix_client.calls[0][1]["limit"] == 5
+
+
+def test_resource_query_unfiltered_limit_respects_explicit(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.lead.list"] = {"result": []}
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/leads", "params": {"select": ["ID"], "limit": 20}},
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[0][0] == "crm.lead.list"
+    assert app.state.bitrix_client.calls[0][1]["limit"] == 20
+
+
+def test_resource_query_unfiltered_limit_skipped_when_filter_present(app, client: TestClient) -> None:
+    app.state.bitrix_client.responses["crm.lead.list"] = {"result": []}
+
+    response = client.post(
+        "/mcp/resource/query",
+        json={"resource": "crm/leads", "params": {"select": ["ID"], "filter": {"STATUS_ID": "NEW"}}},
+    )
+
+    assert response.status_code == 200
+    assert app.state.bitrix_client.calls[0][0] == "crm.lead.list"
+    assert "limit" not in app.state.bitrix_client.calls[0][1]
+
+
 def test_resource_lead_statuses(app, client: TestClient) -> None:
     app.state.bitrix_client.responses["crm.status.list"] = {
         "result": [
@@ -536,6 +575,19 @@ def test_resource_unknown(client: TestClient) -> None:
     assert response.status_code == 404
     payload = response.json()
     assert payload["detail"]["type"] == "resource_not_found"
+
+
+def test_resource_release_versions(app, client: TestClient) -> None:
+    response = client.post("/mcp/resource/query", json={"resource": "versions/releases", "params": {}})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["metadata"]["resource"] == "versions/releases"
+    assert body["total"] == len(body["data"])
+    versions = {entry.get("version") for entry in body["data"]}
+    assert "0.1.0" in versions
+    alias_response = client.post("/mcp/resource/query", json={"resource": "releases", "params": {}})
+    assert alias_response.status_code == 200
+    assert alias_response.json()["data"] == body["data"]
 
 
 def test_mcp_handshake(app, client: TestClient) -> None:
